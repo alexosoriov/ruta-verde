@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useSyncExternalStore } from "react";
+import FieldModeSupport from "./field-mode-support";
 
 function subscribeOnline(callback: () => void) {
   window.addEventListener("online", callback);
@@ -23,9 +24,12 @@ export default function OfflineSupport() {
       .catch(() => setReady(false));
   }, []);
 
-  return <div className={`network-status ${online ? "online" : "offline"}`} role="status">
-    <span />{online
-      ? (ready ? "En línea · respaldo offline preparado" : "En línea")
-      : "Sin internet · viviendas, avance y última ruta disponibles"}
-  </div>;
+  return <>
+    <FieldModeSupport />
+    <div className={`network-status ${online ? "online" : "offline"}`} role="status">
+      <span />{online
+        ? (ready ? "En línea · respaldo offline preparado" : "En línea")
+        : "Sin internet · viviendas, avance y última ruta disponibles"}
+    </div>
+  </>;
 }
