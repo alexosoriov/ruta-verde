@@ -122,6 +122,7 @@ export default function LiveMap({
   const trackingRef = useRef(false);
   const positionInfoRef = useRef<PositionInfo | null>(null);
   const wakeLockRef = useRef<WakeLockHandle | null>(null);
+  const initialStopsRef = useRef(stops);
   const liveStateRef = useRef<LiveState>({
     activeStop,
     completed,
@@ -292,7 +293,8 @@ export default function LiveMap({
       lineJoin: "round",
       smoothFactor: 1.2,
     }).addTo(map);
-    map.fitBounds(L.latLngBounds(stops.map((stop) => [stop.lat, stop.lng] as [number, number])).pad(0.12));
+    const initialStops = initialStopsRef.current;
+    map.fitBounds(L.latLngBounds(initialStops.map((stop) => [stop.lat, stop.lng] as [number, number])).pad(0.12));
 
     return () => {
       if (watchRef.current !== null) navigator.geolocation.clearWatch(watchRef.current);
@@ -301,7 +303,7 @@ export default function LiveMap({
       map.remove();
       mapRef.current = null;
     };
-  }, [releaseWakeLock, stops]);
+  }, [releaseWakeLock]);
 
   useEffect(() => {
     const layer = stopsLayerRef.current;
