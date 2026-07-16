@@ -21,8 +21,9 @@ export const metadata: Metadata = {
     "codex-preview": "development",
   },
   icons: {
-    icon: "/logo-ruta-verde.svg",
-    shortcut: "/logo-ruta-verde.svg",
+    icon: "/icon-192.png",
+    shortcut: "/icon-192.png",
+    apple: "/icon-192.png",
   },
 };
 

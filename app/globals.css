@@ -12,7 +12,7 @@ button { color:inherit; }
 .network-status.offline { background:#9a4937; }
 .network-status.offline span { background:#ffd08a; }
 .topbar { height:76px; padding:0 clamp(20px,4vw,64px); display:flex; align-items:center; gap:14px; background:#123a31; color:white; border-bottom:1px solid rgba(255,255,255,.12); }
-.brand-mark { width:45px; height:45px; border-radius:13px; display:block; box-shadow:0 5px 18px rgba(0,0,0,.18); }
+.brand-mark { width:52px; height:52px; border-radius:15px; display:block; box-shadow:0 6px 20px rgba(0,0,0,.22); }
 .brand-copy { display:flex; flex-direction:column; gap:2px; }
 .brand-copy span,.header-date span { font-size:11px; text-transform:uppercase; letter-spacing:.14em; opacity:.68; }
 .brand-copy strong { font-size:16px; }
@@ -210,7 +210,7 @@ button { color:inherit; }
 }
 @media (max-width:640px) {
   .topbar { height:66px; padding:0 16px; }
-  .brand-mark { width:39px; height:39px; border-radius:11px; }
+  .brand-mark { width:44px; height:44px; border-radius:12px; }
   .brand-copy span,.header-date span { display:none; }
   .brand-copy strong { font-size:14px; }
   .header-date { display:none; }

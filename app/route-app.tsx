@@ -218,7 +218,7 @@ export default function RouteApp() {
     <main>
       <OfflineSupport />
       <header className="topbar">
-        <Image className="brand-mark" src="/logo-ruta-verde.svg" width={45} height={45} alt="Logo Ruta Verde" priority />
+        <Image className="brand-mark" src="/icon-192.png" width={45} height={45} alt="Logo Ruta Verde" priority unoptimized />
         <div className="brand-copy">
           <span>Reciclaje en movimiento</span>
           <strong>Ruta Verde · Santuario</strong>

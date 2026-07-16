@@ -40,7 +40,7 @@ export default function AppInstall() {
     <button className="install-button" onClick={install} aria-label="Instalar Ruta Verde como aplicación"><span>↓</span> Instalar app</button>
     {open && <div className="install-backdrop" role="dialog" aria-modal="true" aria-labelledby="install-title">
       <div className="install-card">
-        <Image src="/logo-ruta-verde.svg" width={74} height={74} alt="" />
+        <Image src="/logo-ruta-verde.png" width={74} height={74} alt="" unoptimized />
         <p>Ruta Verde en tu teléfono</p>
         <h2 id="install-title">Instálala como una app</h2>
         <div className="install-steps">
