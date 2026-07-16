@@ -23,33 +23,7 @@ jobs:
         run: npm ci
 
       - name: Revisar código
-        id: lint
-        continue-on-error: true
-        run: npm run lint > lint.log 2>&1
+        run: npm run lint
 
       - name: Compilar y ejecutar pruebas
-        id: tests
-        continue-on-error: true
-        run: npm test > tests.log 2>&1
-
-      - name: Guardar informes de validación
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: validation-logs
-          path: |
-            lint.log
-            tests.log
-          if-no-files-found: warn
-          retention-days: 3
-
-      - name: Confirmar validación
-        if: always()
-        env:
-          LINT_RESULT: ${{ steps.lint.outcome }}
-          TEST_RESULT: ${{ steps.tests.outcome }}
-        run: |
-          echo "Lint: ${LINT_RESULT}"
-          echo "Build y pruebas: ${TEST_RESULT}"
-          test "${LINT_RESULT}" = "success"
-          test "${TEST_RESULT}" = "success"
+        run: npm test
