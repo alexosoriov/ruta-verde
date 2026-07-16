@@ -8,7 +8,7 @@ type Phase = "checking" | "login" | "loading" | "ready" | "error";
 
 export default function Home() {
   const [phase, setPhase] = useState<Phase>("checking");
-  const [username, setUsername] = useState("rutaverde");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
   const [RouteApp, setRouteApp] = useState<ComponentType | null>(null);
@@ -65,8 +65,9 @@ export default function Home() {
         body: JSON.stringify({ username, password }),
       });
       if (!response.ok) {
-        const body = await response.json().catch(() => ({})) as { error?: string };
-        throw new Error(body.error || "No fue posible iniciar sesión.");
+        const body = await response.json().catch(() => ({})) as { error?: string; retryAfter?: number };
+        const retry = body.retryAfter ? ` Intenta nuevamente en ${Math.ceil(body.retryAfter / 60)} min.` : "";
+        throw new Error((body.error || "No fue posible iniciar sesión.") + retry);
       }
       setPassword("");
       await loadPrivateApp();
@@ -80,6 +81,7 @@ export default function Home() {
     await fetch("/api/session", { method: "DELETE" }).catch(() => {});
     clearRouteData();
     setRouteApp(null);
+    setUsername("");
     setPassword("");
     setPhase("login");
   };
@@ -113,9 +115,9 @@ export default function Home() {
           <div><p style={{ color: "#a02d2d", lineHeight: 1.5 }}>{message}</p><button type="button" onClick={() => window.location.reload()} style={{ width: "100%", padding: 13, border: 0, borderRadius: 12, background: "#173e33", color: "white", fontWeight: 800 }}>Reintentar</button></div>
         ) : (
           <form onSubmit={login} style={{ display: "grid", gap: 14 }}>
-            <p style={{ margin: 0, color: "#587066", lineHeight: 1.55 }}>Los nombres, direcciones y coordenadas del recorrido están cifrados con AES-256-GCM y solo se cargan después de iniciar sesión.</p>
-            <label style={{ display: "grid", gap: 6, color: "#173e33", fontWeight: 800 }}>Usuario<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} style={{ padding: 13, border: "1px solid #bed0c8", borderRadius: 12, font: "inherit" }} /></label>
-            <label style={{ display: "grid", gap: 6, color: "#173e33", fontWeight: 800 }}>Contraseña<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} style={{ padding: 13, border: "1px solid #bed0c8", borderRadius: 12, font: "inherit" }} /></label>
+            <p style={{ margin: 0, color: "#587066", lineHeight: 1.55 }}>Los nombres, direcciones, notas y coordenadas están cifrados y solo se cargan después de iniciar sesión.</p>
+            <label style={{ display: "grid", gap: 6, color: "#173e33", fontWeight: 800 }}>Usuario<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required style={{ padding: 13, border: "1px solid #bed0c8", borderRadius: 12, font: "inherit" }} /></label>
+            <label style={{ display: "grid", gap: 6, color: "#173e33", fontWeight: 800 }}>Contraseña<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required style={{ padding: 13, border: "1px solid #bed0c8", borderRadius: 12, font: "inherit" }} /></label>
             {message && <p role="alert" style={{ margin: 0, color: "#a02d2d", fontWeight: 700 }}>{message}</p>}
             <button type="submit" style={{ padding: 14, border: 0, borderRadius: 12, background: "#173e33", color: "white", fontWeight: 900, fontSize: 15 }}>Entrar a Ruta Verde</button>
           </form>
