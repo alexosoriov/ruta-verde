@@ -19,9 +19,10 @@ test("iPhone usa viewport completo, modo standalone y zonas seguras", async () =
 });
 
 test("los controles móviles tienen blancos táctiles amplios y no se superponen", async () => {
-  const [page, mobile] = await Promise.all([
+  const [page, mobile, touch] = await Promise.all([
     read("app/page.tsx"),
     read("app/mobile.css"),
+    read("app/mobile-touch.css"),
   ]);
 
   assert.match(page, /session-dock/u);
@@ -30,6 +31,9 @@ test("los controles móviles tienen blancos táctiles amplios y no se superponen
   assert.match(mobile, /network-status[\s\S]*bottom:\s*calc\(76px/u);
   assert.match(mobile, /font-size:\s*16px\s*!important/u);
   assert.match(mobile, /prefers-reduced-motion/u);
+  assert.match(touch, /\.row-actions button[\s\S]*height:\s*48px/u);
+  assert.match(touch, /grid-template-columns:\s*repeat\(3/u);
+  assert.match(touch, /\.row-nav[\s\S]*grid-column:\s*1 \/ -1/u);
 });
 
 test("el manifiesto cumple la instalación PWA en Android", async () => {
