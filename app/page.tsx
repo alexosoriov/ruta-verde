@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, type ComponentType, type FormEvent } from "react";
 import Image from "next/image";
 import { clearRouteData, installRouteData } from "./route-data";
+import { migrateLegacyBrowserStorage } from "./local-security-migration";
 
 type Phase = "checking" | "login" | "loading" | "ready" | "error";
 type UserRole = "driver" | "manager" | "superadmin";
@@ -66,6 +67,7 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
+    void migrateLegacyBrowserStorage();
     void fetch("/api/session", { cache: "no-store" })
       .then(async (response) => {
         if (!active) return;
