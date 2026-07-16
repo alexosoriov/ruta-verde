@@ -51,4 +51,6 @@ jobs:
           path: |
             lint.log
             test.log
-          retention-days: 3
+            full-route-simulation-report.json
+          if-no-files-found: ignore
+          retention-days: 7
