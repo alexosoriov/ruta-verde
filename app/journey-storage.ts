@@ -1,4 +1,6 @@
 import type { Stop } from "./route-data";
+import type { GpsMetrics } from "./tracking-types";
+import { EMPTY_GPS_METRICS } from "./tracking-types";
 import { deleteStored, readStored, writeStored } from "./journey-db";
 
 export type StopStatus = "pending" | "done" | "absent";
@@ -6,7 +8,7 @@ export type StopDetail = { kilos: string; material: string; note: string };
 export type ActivityEntry = { id: string; stopId: string; stopName: string; stopAddress?: string; status: "done" | "absent"; at: number };
 export type StoredPosition = { lat: number; lng: number; accuracy: number | null; at: number };
 export type JourneySnapshot = {
-  version: 3;
+  version: 4;
   journeyId: string;
   statuses: Record<string, StopStatus>;
   details: Record<string, StopDetail>;
@@ -18,6 +20,7 @@ export type JourneySnapshot = {
   activity: ActivityEntry[];
   vehicle: string;
   lastPosition: StoredPosition | null;
+  gpsMetrics: GpsMetrics;
   updatedAt: number;
 };
 
@@ -34,12 +37,33 @@ export function currentJourneyId() {
   return `santuario-${date}`;
 }
 
-function isSnapshot(value: unknown): value is JourneySnapshot {
+function isGpsMetrics(value: unknown): value is GpsMetrics {
   if (!value || typeof value !== "object") return false;
-  const candidate = value as Partial<JourneySnapshot>;
-  return typeof candidate.journeyId === "string" && typeof candidate.updatedAt === "number" &&
-    Boolean(candidate.statuses) && Boolean(candidate.details) &&
-    Array.isArray(candidate.customStops) && Array.isArray(candidate.activity);
+  const metrics = value as Partial<GpsMetrics>;
+  return typeof metrics.actualKm === "number" && typeof metrics.movingMinutes === "number" && typeof metrics.stoppedMinutes === "number";
+}
+
+function normalizeSnapshot(value: unknown): JourneySnapshot | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<JourneySnapshot> & { version?: number };
+  if (typeof candidate.journeyId !== "string" || typeof candidate.updatedAt !== "number") return null;
+  if (!candidate.statuses || !candidate.details || !Array.isArray(candidate.customStops) || !Array.isArray(candidate.activity)) return null;
+  return {
+    version: 4,
+    journeyId: candidate.journeyId,
+    statuses: candidate.statuses,
+    details: candidate.details,
+    customStops: candidate.customStops,
+    reverse: Boolean(candidate.reverse),
+    optimizedIds: Array.isArray(candidate.optimizedIds) ? candidate.optimizedIds : [],
+    startedAt: typeof candidate.startedAt === "number" ? candidate.startedAt : null,
+    completedAt: typeof candidate.completedAt === "number" ? candidate.completedAt : null,
+    activity: candidate.activity,
+    vehicle: typeof candidate.vehicle === "string" ? candidate.vehicle : "Camioneta",
+    lastPosition: candidate.lastPosition && typeof candidate.lastPosition === "object" ? candidate.lastPosition : null,
+    gpsMetrics: isGpsMetrics(candidate.gpsMetrics) ? candidate.gpsMetrics : EMPTY_GPS_METRICS,
+    updatedAt: candidate.updatedAt,
+  };
 }
 
 function backupKey(journeyId: string) {
@@ -52,12 +76,12 @@ export function saveJourneyEmergency(snapshot: JourneySnapshot) {
 
 function readLocalBackup(journeyId: string) {
   try {
-    const backup = JSON.parse(localStorage.getItem(backupKey(journeyId)) || "null") as unknown;
-    if (isSnapshot(backup)) return backup;
+    const backup = normalizeSnapshot(JSON.parse(localStorage.getItem(backupKey(journeyId)) || "null"));
+    if (backup) return backup;
     const legacy = JSON.parse(localStorage.getItem(LEGACY_KEY) || "null") as Record<string, unknown> | null;
     if (!legacy) return null;
     return {
-      version: 3,
+      version: 4,
       journeyId,
       statuses: (legacy.statuses as JourneySnapshot["statuses"]) || {},
       details: (legacy.details as JourneySnapshot["details"]) || {},
@@ -69,6 +93,7 @@ function readLocalBackup(journeyId: string) {
       activity: (legacy.activity as ActivityEntry[]) || [],
       vehicle: typeof legacy.vehicle === "string" ? legacy.vehicle : "Camioneta",
       lastPosition: null,
+      gpsMetrics: isGpsMetrics(legacy.gpsMetrics) ? legacy.gpsMetrics : EMPTY_GPS_METRICS,
       updatedAt: Date.now(),
     } satisfies JourneySnapshot;
   } catch {
@@ -82,7 +107,7 @@ async function loadRemote(journeyId: string) {
     const response = await fetch(`/api/journey-state?journey=${encodeURIComponent(journeyId)}`, { cache: "no-store" });
     if (!response.ok) return null;
     const data = await response.json() as { snapshot?: unknown };
-    return isSnapshot(data.snapshot) ? data.snapshot : null;
+    return normalizeSnapshot(data.snapshot);
   } catch {
     return null;
   }
@@ -91,8 +116,7 @@ async function loadRemote(journeyId: string) {
 export async function loadJourneySnapshot(journeyId: string) {
   let local: JourneySnapshot | null = null;
   try {
-    const stored = await readStored<JourneySnapshot>("journeys", journeyId);
-    if (isSnapshot(stored)) local = stored;
+    local = normalizeSnapshot(await readStored<JourneySnapshot>("journeys", journeyId));
   } catch {}
   local = local ?? readLocalBackup(journeyId);
   const remote = await loadRemote(journeyId);
@@ -120,12 +144,11 @@ export async function queueJourneySnapshot(snapshot: JourneySnapshot) {
 
 async function readQueued(journeyId: string) {
   try {
-    const stored = await readStored<JourneySnapshot>("outbox", journeyId);
-    if (isSnapshot(stored)) return stored;
+    const stored = normalizeSnapshot(await readStored<JourneySnapshot>("outbox", journeyId));
+    if (stored) return stored;
   } catch {}
   try {
-    const fallback = JSON.parse(localStorage.getItem(`outbox:${journeyId}`) || "null") as unknown;
-    return isSnapshot(fallback) ? fallback : null;
+    return normalizeSnapshot(JSON.parse(localStorage.getItem(`outbox:${journeyId}`) || "null"));
   } catch {
     return null;
   }
