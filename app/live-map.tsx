@@ -5,6 +5,7 @@ import * as L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { Stop } from "./route-data";
 import { getRoadRoute } from "./road-route";
+import type { GpsMetrics, TrackingActivity } from "./tracking-types";
 import { applyTruckAppearance, bearingBetween, normalizeHeading, truckIcon } from "./truck-marker";
 
 type Props = {
@@ -19,11 +20,21 @@ type Props = {
   total: number;
   kilos: number;
   routeKm: number;
+  baselineRouteKm: number;
+  routeSavingsKm: number;
+  plannedDriveMinutes: number;
   estimatedMinutes: number;
   startedAt: number | null;
   privacyMode: boolean;
+  activity: TrackingActivity[];
+  initialMetrics: GpsMetrics;
+  startSignal: number;
+  resetSignal: number;
+  pickLocationMode: boolean;
   onTrackingChange: (active: boolean) => void;
   onArrival: (stop: Stop, distanceMeters: number) => void;
+  onGpsMetrics: (metrics: GpsMetrics) => void;
+  onLocationPicked: (lat: number, lng: number) => void;
 };
 
 type PositionInfo = {
@@ -45,12 +56,16 @@ type LiveState = {
   total: number;
   kilos: number;
   routeKm: number;
+  baselineRouteKm: number;
+  routeSavingsKm: number;
+  plannedDriveMinutes: number;
   estimatedMinutes: number;
   startedAt: number | null;
   privacyMode: boolean;
+  activity: TrackingActivity[];
 };
 
-const OUTBOX_KEY = "santuario-tracking-outbox-v3";
+const OUTBOX_KEY = "santuario-tracking-outbox-v4";
 const MAX_GPS_ACCURACY_METERS = 70;
 const ARRIVAL_MAX_ACCURACY_METERS = 25;
 const ARRIVAL_CONFIRMATIONS = 3;
@@ -64,6 +79,7 @@ const GPS_RESET_AFTER_MS = 20_000;
 const GPS_DELAY_WARNING_MS = 12_000;
 const GPS_LOST_WARNING_MS = 25_000;
 const SYNC_INTERVAL_MS = 5_000;
+const MAX_METRIC_INTERVAL_MS = 30_000;
 
 function addressLabel(stop: Stop) {
   return stop.address ?? `Punto GPS ${stop.id}`;
@@ -83,6 +99,14 @@ function journeyId() {
   return `santuario-${date}`;
 }
 
+function roundedMetrics(distanceMeters: number, movingMs: number, stoppedMs: number): GpsMetrics {
+  return {
+    actualKm: Math.round((distanceMeters / 1000) * 1000) / 1000,
+    movingMinutes: Math.round((movingMs / 60_000) * 10) / 10,
+    stoppedMinutes: Math.round((stoppedMs / 60_000) * 10) / 10,
+  };
+}
+
 export default function LiveMap({
   stops,
   statuses,
@@ -95,11 +119,21 @@ export default function LiveMap({
   total,
   kilos,
   routeKm,
+  baselineRouteKm,
+  routeSavingsKm,
+  plannedDriveMinutes,
   estimatedMinutes,
   startedAt,
   privacyMode,
+  activity,
+  initialMetrics,
+  startSignal,
+  resetSignal,
+  pickLocationMode,
   onTrackingChange,
   onArrival,
+  onGpsMetrics,
+  onLocationPicked,
 }: Props) {
   const mapElement = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -112,6 +146,7 @@ export default function LiveMap({
   const animationRef = useRef<number | null>(null);
   const acceptedPointRef = useRef<L.LatLng | null>(null);
   const lastFixAtRef = useRef<number | null>(null);
+  const lastMetricAtRef = useRef<number | null>(null);
   const pendingJumpRef = useRef<PendingJump | null>(null);
   const headingRef = useRef(0);
   const renderedHeadingRef = useRef(0);
@@ -123,6 +158,11 @@ export default function LiveMap({
   const positionInfoRef = useRef<PositionInfo | null>(null);
   const wakeLockRef = useRef<WakeLockHandle | null>(null);
   const initialStopsRef = useRef(stops);
+  const handledStartSignalRef = useRef(0);
+  const handledResetSignalRef = useRef(resetSignal);
+  const distanceMetersRef = useRef(initialMetrics.actualKm * 1000);
+  const movingMsRef = useRef(initialMetrics.movingMinutes * 60_000);
+  const stoppedMsRef = useRef(initialMetrics.stoppedMinutes * 60_000);
   const liveStateRef = useRef<LiveState>({
     activeStop,
     completed,
@@ -132,9 +172,13 @@ export default function LiveMap({
     total,
     kilos,
     routeKm,
+    baselineRouteKm,
+    routeSavingsKm,
+    plannedDriveMinutes,
     estimatedMinutes,
     startedAt,
     privacyMode,
+    activity,
   });
 
   const [tracking, setTracking] = useState(false);
@@ -162,11 +206,22 @@ export default function LiveMap({
       total,
       kilos,
       routeKm,
+      baselineRouteKm,
+      routeSavingsKm,
+      plannedDriveMinutes,
       estimatedMinutes,
       startedAt,
       privacyMode,
+      activity,
     };
-  }, [activeStop, completed, done, absent, pending, total, kilos, routeKm, estimatedMinutes, startedAt, privacyMode]);
+  }, [activeStop, completed, done, absent, pending, total, kilos, routeKm, baselineRouteKm, routeSavingsKm, plannedDriveMinutes, estimatedMinutes, startedAt, privacyMode, activity]);
+
+  useEffect(() => {
+    if (trackingRef.current) return;
+    distanceMetersRef.current = initialMetrics.actualKm * 1000;
+    movingMsRef.current = initialMetrics.movingMinutes * 60_000;
+    stoppedMsRef.current = initialMetrics.stoppedMinutes * 60_000;
+  }, [initialMetrics]);
 
   const releaseWakeLock = useCallback(async () => {
     const current = wakeLockRef.current;
@@ -201,6 +256,7 @@ export default function LiveMap({
     statusOverride?: "active" | "paused" | "finished",
   ) => {
     const state = liveStateRef.current;
+    const metrics = roundedMetrics(distanceMetersRef.current, movingMsRef.current, stoppedMsRef.current);
     const payload = JSON.stringify({
       journeyId: journeyId(),
       lat: point.lat,
@@ -216,8 +272,15 @@ export default function LiveMap({
       total: state.total,
       kilos: state.kilos,
       routeKm: state.routeKm,
+      baselineRouteKm: state.baselineRouteKm,
+      routeSavingsKm: state.routeSavingsKm,
+      plannedDriveMinutes: state.plannedDriveMinutes,
+      actualKm: metrics.actualKm,
+      movingMinutes: metrics.movingMinutes,
+      stoppedMinutes: metrics.stoppedMinutes,
       estimatedMinutes: state.estimatedMinutes,
       startedAt: state.startedAt,
+      activity: state.activity,
       status: statusOverride ?? (state.completed >= state.total ? "finished" : "active"),
     });
 
@@ -259,7 +322,7 @@ export default function LiveMap({
     if (!point || !info) return;
     const timer = window.setTimeout(() => void sendTracking(point, info), 180);
     return () => window.clearTimeout(timer);
-  }, [tracking, activeId, completed, done, absent, pending, total, kilos, routeKm, estimatedMinutes, startedAt, privacyMode, sendTracking]);
+  }, [tracking, activeId, completed, done, absent, pending, total, kilos, routeKm, baselineRouteKm, routeSavingsKm, plannedDriveMinutes, estimatedMinutes, startedAt, privacyMode, activity, sendTracking]);
 
   useEffect(() => {
     if (!tracking) return;
@@ -294,7 +357,9 @@ export default function LiveMap({
       smoothFactor: 1.2,
     }).addTo(map);
     const initialStops = initialStopsRef.current;
-    map.fitBounds(L.latLngBounds(initialStops.map((stop) => [stop.lat, stop.lng] as [number, number])).pad(0.12));
+    if (initialStops.length) {
+      map.fitBounds(L.latLngBounds(initialStops.map((stop) => [stop.lat, stop.lng] as [number, number])).pad(0.12));
+    }
 
     return () => {
       if (watchRef.current !== null) navigator.geolocation.clearWatch(watchRef.current);
@@ -304,6 +369,23 @@ export default function LiveMap({
       mapRef.current = null;
     };
   }, [releaseWakeLock]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const container = map.getContainer();
+    container.style.cursor = pickLocationMode ? "crosshair" : "";
+    if (!pickLocationMode) return;
+    const handleClick = (event: L.LeafletMouseEvent) => {
+      onLocationPicked(event.latlng.lat, event.latlng.lng);
+      map.flyTo(event.latlng, Math.max(map.getZoom(), 17));
+    };
+    map.on("click", handleClick);
+    return () => {
+      map.off("click", handleClick);
+      container.style.cursor = "";
+    };
+  }, [pickLocationMode, onLocationPicked]);
 
   useEffect(() => {
     const layer = stopsLayerRef.current;
@@ -323,7 +405,7 @@ export default function LiveMap({
         smoothFactor: 1,
       }).addTo(layer).bringToBack();
     }).catch(() => {
-      if (!controller.signal.aborted) setGpsMessage("Paradas visibles · trazado por calles no disponible");
+      if (!controller.signal.aborted) setGpsMessage("Paradas visibles · usando trazado local de respaldo");
     });
 
     stops.forEach((stop, index) => {
@@ -341,13 +423,15 @@ export default function LiveMap({
         direction: "top",
         offset: [0, -12],
       });
-      marker.on("click", () => map.flyTo([stop.lat, stop.lng], Math.max(map.getZoom(), 17)));
+      marker.on("click", () => {
+        if (!pickLocationMode) map.flyTo([stop.lat, stop.lng], Math.max(map.getZoom(), 17));
+      });
     });
 
     return () => controller.abort();
-  }, [stops, statuses, activeId, privacyMode]);
+  }, [stops, statuses, activeId, privacyMode, pickLocationMode]);
 
-  const animateTruckTo = (target: L.LatLng, accuracy: number) => {
+  const animateTruckTo = useCallback((target: L.LatLng, accuracy: number) => {
     const marker = truckRef.current;
     if (!marker) return;
     if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
@@ -374,9 +458,9 @@ export default function LiveMap({
       else animationRef.current = null;
     };
     animationRef.current = requestAnimationFrame(step);
-  };
+  }, []);
 
-  const acceptPoint = (raw: L.LatLng, accuracy: number, timestamp: number) => {
+  const acceptPoint = useCallback((raw: L.LatLng, accuracy: number, timestamp: number) => {
     const previous = acceptedPointRef.current;
     if (!previous) return raw;
 
@@ -416,9 +500,9 @@ export default function LiveMap({
       previous.lat + (raw.lat - previous.lat) * alpha,
       previous.lng + (raw.lng - previous.lng) * alpha,
     );
-  };
+  }, []);
 
-  const stopTracking = () => {
+  const stopTracking = useCallback(() => {
     const point = acceptedPointRef.current;
     const info = positionInfoRef.current;
     const state = liveStateRef.current;
@@ -430,6 +514,7 @@ export default function LiveMap({
     animationRef.current = null;
     acceptedPointRef.current = null;
     lastFixAtRef.current = null;
+    lastMetricAtRef.current = null;
     pendingJumpRef.current = null;
     arrivalCandidateRef.current = null;
     trackingRef.current = false;
@@ -437,11 +522,13 @@ export default function LiveMap({
     onTrackingChange(false);
     setGpsMessage("GPS detenido");
     void releaseWakeLock();
-  };
+  }, [onTrackingChange, releaseWakeLock, sendTracking]);
 
-  const startTracking = () => {
+  const beginTracking = useCallback(() => {
     if (trackingRef.current) {
-      stopTracking();
+      setFollow(true);
+      const point = truckRef.current?.getLatLng();
+      if (point && mapRef.current) mapRef.current.flyTo(point, 18);
       return;
     }
     if (!navigator.geolocation) {
@@ -451,6 +538,8 @@ export default function LiveMap({
 
     trackingRef.current = true;
     setTracking(true);
+    setFollow(true);
+    followRef.current = true;
     onTrackingChange(true);
     setGpsMessage("Solicitando ubicación de alta precisión…");
     void requestWakeLock();
@@ -491,9 +580,23 @@ export default function LiveMap({
             : headingRef.current
         );
 
+        const metricDelta = lastMetricAtRef.current === null
+          ? 0
+          : Math.min(Math.max(0, timestamp - lastMetricAtRef.current), MAX_METRIC_INTERVAL_MS);
+        if (metricDelta > 0) {
+          if (moving) movingMsRef.current += metricDelta;
+          else stoppedMsRef.current += metricDelta;
+        }
+        const reasonableStep =
+          movedMeters >= MIN_TRAIL_STEP_METERS &&
+          movedMeters <= MAX_NORMAL_JUMP_METERS &&
+          (currentSpeed === null || currentSpeed <= MAX_REASONABLE_SPEED_METERS_PER_SECOND);
+        if (reasonableStep) distanceMetersRef.current += movedMeters;
+
         headingRef.current = normalizeHeading(calculatedHeading);
         acceptedPointRef.current = point;
         lastFixAtRef.current = timestamp;
+        lastMetricAtRef.current = timestamp;
 
         if (!truckRef.current) {
           renderedHeadingRef.current = headingRef.current;
@@ -501,7 +604,7 @@ export default function LiveMap({
             icon: truckIcon(renderedHeadingRef.current, moving),
             zIndexOffset: 1_000,
           }).addTo(map);
-          truckRef.current.bindTooltip(moving ? "Camión en movimiento" : "Camión detenido", {
+          truckRef.current.bindTooltip(moving ? "🚛 Camión en movimiento" : "🚛 Camión detenido", {
             direction: "top",
             offset: [0, -28],
           });
@@ -519,11 +622,10 @@ export default function LiveMap({
             moving,
             renderedHeadingRef.current,
           );
-          truckRef.current.setTooltipContent(moving ? "Camión en movimiento" : "Camión detenido");
           animateTruckTo(point, coords.accuracy);
         }
 
-        if (movedMeters >= MIN_TRAIL_STEP_METERS) trailRef.current?.addLatLng(point);
+        if (reasonableStep) trailRef.current?.addLatLng(point);
         if (followRef.current) map.setView(point, Math.max(map.getZoom(), 17), { animate: true });
 
         const info: PositionInfo = {
@@ -535,6 +637,9 @@ export default function LiveMap({
         positionInfoRef.current = info;
         setPositionInfo(info);
         setGpsMessage(moving ? "Camión avanzando en tiempo real" : "Camión localizado · señal estable");
+
+        const metrics = roundedMetrics(distanceMetersRef.current, movingMsRef.current, stoppedMsRef.current);
+        onGpsMetrics(metrics);
 
         const state = liveStateRef.current;
         if (state.activeStop) {
@@ -549,15 +654,8 @@ export default function LiveMap({
           if (reliableArrival) {
             const previousCandidate = arrivalCandidateRef.current;
             arrivalCandidateRef.current = previousCandidate?.stopId === state.activeStop.id
-              ? {
-                  ...previousCandidate,
-                  confirmations: previousCandidate.confirmations + 1,
-                }
-              : {
-                  stopId: state.activeStop.id,
-                  confirmations: 1,
-                  firstSeenAt: timestamp,
-                };
+              ? { ...previousCandidate, confirmations: previousCandidate.confirmations + 1 }
+              : { stopId: state.activeStop.id, confirmations: 1, firstSeenAt: timestamp };
 
             const candidate = arrivalCandidateRef.current;
             const confirmed =
@@ -617,7 +715,24 @@ export default function LiveMap({
     );
 
     watchRef.current = id;
-  };
+  }, [acceptPoint, animateTruckTo, onArrival, onGpsMetrics, onTrackingChange, releaseWakeLock, requestWakeLock, sendTracking]);
+
+  useEffect(() => {
+    if (startSignal <= 0 || handledStartSignalRef.current === startSignal) return;
+    handledStartSignalRef.current = startSignal;
+    beginTracking();
+  }, [startSignal, beginTracking]);
+
+  useEffect(() => {
+    if (handledResetSignalRef.current === resetSignal) return;
+    handledResetSignalRef.current = resetSignal;
+    distanceMetersRef.current = 0;
+    movingMsRef.current = 0;
+    stoppedMsRef.current = 0;
+    lastMetricAtRef.current = null;
+    trailRef.current?.setLatLngs([]);
+    onGpsMetrics({ actualKm: 0, movingMinutes: 0, stoppedMinutes: 0 });
+  }, [resetSignal, onGpsMetrics]);
 
   const changeMapStyle = (style: "streets" | "satellite") => {
     const map = mapRef.current;
@@ -638,6 +753,7 @@ export default function LiveMap({
 
   const centerRoute = () => {
     setFollow(false);
+    if (!stops.length) return;
     mapRef.current?.fitBounds(
       L.latLngBounds(stops.map((stop) => [stop.lat, stop.lng] as [number, number])).pad(0.12),
     );
@@ -650,6 +766,11 @@ export default function LiveMap({
     mapRef.current.flyTo(point, 18);
   };
 
+  const toggleTracking = () => {
+    if (trackingRef.current) stopTracking();
+    else beginTracking();
+  };
+
   return (
     <div className="map-shell live-map-shell">
       <div className="map-toolbar">
@@ -658,7 +779,7 @@ export default function LiveMap({
           <div><strong>Mapa y seguimiento del camión</strong><small>{gpsMessage}</small></div>
         </div>
         <div className="map-buttons">
-          <button className={tracking ? "tracking" : ""} onClick={startTracking}>{tracking ? "Detener GPS" : "Iniciar GPS"}</button>
+          <button className={tracking ? "tracking" : ""} onClick={toggleTracking}>{tracking ? "Detener GPS" : "Iniciar GPS"}</button>
           <button onClick={centerTruck} disabled={!positionInfo}>Seguir camión</button>
           <button onClick={centerRoute}>Ver ruta</button>
         </div>
@@ -668,12 +789,13 @@ export default function LiveMap({
         <button className={mapStyle === "satellite" ? "active" : ""} onClick={() => changeMapStyle("satellite")}>Vista satélite</button>
         <a href={`https://www.google.com/maps/@?api=1&map_action=map&center=${stops[0]?.lat},${stops[0]?.lng}&zoom=16`} target="_blank" rel="noreferrer">Abrir Google Maps ↗</a>
       </div>
+      {pickLocationMode && <div className="notice" role="status">Toca el mapa en la ubicación exacta de la casa nueva.</div>}
       <div ref={mapElement} className="street-map" aria-label="Mapa con calles, paradas y ubicación del camión" />
       <div className="map-caption live-caption">
         <span>{mapStyle === "streets" ? "Calles reales de Chile · OpenStreetMap" : "Imágenes satelitales · Esri"} · {stops.length} paradas</span>
         <span>{positionInfo ? `${positionInfo.moving ? "En movimiento" : "Detenido"} · ${positionInfo.speed === null ? "velocidad sin datos" : `${Math.round(positionInfo.speed * 3.6)} km/h`} · precisión ${Math.round(positionInfo.accuracy)} m` : "Activa el GPS desde el teléfono del camión"}</span>
       </div>
-      <p className="gps-privacy">GPS reforzado: mantiene la pantalla activa, recupera pérdidas de señal, suaviza el movimiento y confirma la llegada con varias lecturas precisas.</p>
+      <p className="gps-privacy">GPS reforzado: mantiene la pantalla activa, mide kilómetros y tiempos, recupera pérdidas de señal y confirma la llegada con varias lecturas precisas.</p>
     </div>
   );
 }
