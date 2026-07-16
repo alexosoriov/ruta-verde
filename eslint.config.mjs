@@ -6,10 +6,10 @@ const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
   {
-    files: ["app/route-app.tsx"],
+    files: ["app/route-app.tsx", "app/page.tsx"],
     rules: {
-      // Este controlador restaura y refleja una jornada persistida desde IndexedDB/D1.
-      // Las actualizaciones se ejecutan para sincronizar ese sistema externo con React.
+      // Estos controladores restauran sesión/jornada desde sistemas externos.
+      // Las actualizaciones de estado reflejan IndexedDB, D1 y la sesión del Worker.
       "react-hooks/set-state-in-effect": "off",
     },
   },

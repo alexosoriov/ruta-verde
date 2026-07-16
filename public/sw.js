@@ -1,4 +1,4 @@
-const CACHE = "santuario-route-v11";
+const CACHE = "santuario-route-v12";
 const CORE = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 
 async function cacheResponse(request, response) {
@@ -38,6 +38,12 @@ self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET") return;
   const url = new URL(request.url);
+
+  // Nunca guardar sesiones, coordenadas, actividad ni el recorrido descifrado.
+  if (url.origin === self.location.origin && url.pathname.startsWith("/api/")) {
+    event.respondWith(fetch(request));
+    return;
+  }
 
   // Los mapas externos conservan su política de caché normal del navegador.
   // La app no realiza precarga ni descarga masiva de teselas.

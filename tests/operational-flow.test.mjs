@@ -80,34 +80,57 @@ function environment(database) {
   return {
     DB: database,
     ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+    ROUTE_USERNAME: "test-user",
+    ROUTE_PASSWORD: "test-password",
+    ROUTE_SESSION_SECRET: "test-session-secret-with-enough-entropy",
   };
 }
 
 const context = { waitUntil() {}, passThroughOnException() {} };
 
+async function loginCookie(worker, env) {
+  const response = await worker.fetch(new Request("http://localhost/api/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: env.ROUTE_USERNAME, password: env.ROUTE_PASSWORD }),
+  }), env, context);
+  assert.equal(response.status, 200);
+  const setCookie = response.headers.get("set-cookie");
+  assert.ok(setCookie);
+  return setCookie.split(";", 1)[0];
+}
+
+function authorizedRequest(url, cookie, init = {}) {
+  const headers = new Headers(init.headers);
+  headers.set("Cookie", cookie);
+  return new Request(url, { ...init, headers });
+}
+
 test("tracking synchronizes remote activity and real GPS metrics", async () => {
   const worker = await loadWorker();
   const database = new FakeD1();
+  const env = environment(database);
+  const cookie = await loginCookie(worker, env);
   const activity = [{
     id: "03-1000",
     stopId: "03",
-    label: "Los Pimientos 4806 · Vivianne Ponce Correa",
+    label: "Parada 03",
     status: "done",
     at: 1_000,
     kilos: 8.5,
   }];
 
-  const post = await worker.fetch(new Request("http://localhost/api/tracking", {
+  const post = await worker.fetch(authorizedRequest("http://localhost/api/tracking", cookie, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       journeyId: "santuario-2026-07-16",
-      lat: -41.46084,
-      lng: -72.89768,
+      lat: -33.45,
+      lng: -70.66,
       speed: 2.2,
       heading: 91,
       accuracy: 8,
-      nextStop: "Los Pimientos 4820 · Mabel Von Johnn",
+      nextStop: "Parada 04",
       completed: 2,
       done: 1,
       absent: 1,
@@ -126,13 +149,13 @@ test("tracking synchronizes remote activity and real GPS metrics", async () => {
       activity,
       status: "active",
     }),
-  }), environment(database), context);
+  }), env, context);
 
   assert.equal(post.status, 200);
 
   const get = await worker.fetch(
-    new Request("http://localhost/api/tracking?journey=santuario-2026-07-16"),
-    environment(database),
+    authorizedRequest("http://localhost/api/tracking?journey=santuario-2026-07-16", cookie),
+    env,
     context,
   );
   assert.equal(get.status, 200);
@@ -149,22 +172,26 @@ test("tracking synchronizes remote activity and real GPS metrics", async () => {
 
 test("tracking rejects impossible coordinates", async () => {
   const worker = await loadWorker();
-  const response = await worker.fetch(new Request("http://localhost/api/tracking", {
+  const env = environment(new FakeD1());
+  const cookie = await loginCookie(worker, env);
+  const response = await worker.fetch(authorizedRequest("http://localhost/api/tracking", cookie, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ lat: 120, lng: -72 }),
-  }), environment(new FakeD1()), context);
+    body: JSON.stringify({ lat: 120, lng: -70 }),
+  }), env, context);
   assert.equal(response.status, 400);
 });
 
 test("journey state survives a remote save and load", async () => {
   const worker = await loadWorker();
   const database = new FakeD1();
+  const env = environment(database);
+  const cookie = await loginCookie(worker, env);
   const snapshot = {
     version: 4,
     journeyId: "santuario-2026-07-16",
     statuses: { "01": "done" },
-    details: { "01": { kilos: "4,5", material: "Orgánico", note: "Bolsa afuera" } },
+    details: { "01": { kilos: "4,5", material: "Orgánico", note: "Retiro de prueba" } },
     customStops: [],
     reverse: false,
     optimizedIds: [],
@@ -177,22 +204,33 @@ test("journey state survives a remote save and load", async () => {
     updatedAt: 2_000,
   };
 
-  const post = await worker.fetch(new Request("http://localhost/api/journey-state", {
+  const post = await worker.fetch(authorizedRequest("http://localhost/api/journey-state", cookie, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ journeyId: snapshot.journeyId, snapshot }),
-  }), environment(database), context);
+  }), env, context);
   assert.equal(post.status, 200);
 
   const get = await worker.fetch(
-    new Request(`http://localhost/api/journey-state?journey=${snapshot.journeyId}`),
-    environment(database),
+    authorizedRequest(`http://localhost/api/journey-state?journey=${snapshot.journeyId}`, cookie),
+    env,
     context,
   );
   assert.equal(get.status, 200);
   const data = await get.json();
   assert.deepEqual(data.snapshot.gpsMetrics, snapshot.gpsMetrics);
   assert.equal(data.snapshot.statuses["01"], "done");
+});
+
+test("protected APIs reject requests without a valid session", async () => {
+  const worker = await loadWorker();
+  const env = environment(new FakeD1());
+  const response = await worker.fetch(
+    new Request("http://localhost/api/tracking?journey=santuario-2026-07-16"),
+    env,
+    context,
+  );
+  assert.equal(response.status, 401);
 });
 
 test("driver source connects the main action, map picker and manager metrics", async () => {
