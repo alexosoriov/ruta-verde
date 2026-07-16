@@ -3,11 +3,14 @@ import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } fr
 import handler from "vinext/server/app-router-entry";
 import { handleJourneyState } from "./journey-state";
 import { handleVehicleRoadRoute } from "./vehicle-road-route";
+import { handleSessionRequest, requireSession, type SecurityEnv } from "./auth";
+import { decryptPrivateRoute } from "./private-route-data";
 
-interface Env {
+interface Env extends SecurityEnv {
   ASSETS: Fetcher;
   DB?: D1Database;
   OPENROUTESERVICE_API_KEY?: string;
+  ROUTE_DATA_KEY?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -242,6 +245,12 @@ async function handleTracking(request: Request, db: D1Database) {
   return Response.json({ ok: true, journeyId, updatedAt }, { headers: { "Cache-Control": "no-store" } });
 }
 
+function noStoreJson(body: unknown, init: ResponseInit = {}) {
+  const headers = new Headers(init.headers);
+  headers.set("Cache-Control", "no-store");
+  return Response.json(body, { ...init, headers });
+}
+
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -257,11 +266,39 @@ const worker = {
       }, allowedWidths);
     }
 
+    if (url.pathname === "/api/session") {
+      return handleSessionRequest(request, env);
+    }
+
+    const protectedApi = url.pathname === "/api/private-route" ||
+      url.pathname === "/api/tracking" ||
+      url.pathname === "/api/journey-state" ||
+      url.pathname === "/api/road-route";
+
+    if (protectedApi) {
+      const denied = await requireSession(request, env);
+      if (denied) return denied;
+    }
+
+    if (url.pathname === "/api/private-route") {
+      if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
+      if (!env.ROUTE_DATA_KEY) {
+        return noStoreJson({ error: "Falta configurar ROUTE_DATA_KEY en Cloudflare." }, { status: 503 });
+      }
+      try {
+        const stops = await decryptPrivateRoute(env.ROUTE_DATA_KEY);
+        return noStoreJson({ stops });
+      } catch (error) {
+        console.error("No fue posible descifrar el recorrido privado", error);
+        return noStoreJson({ error: "No fue posible descifrar los datos privados." }, { status: 503 });
+      }
+    }
+
     if (url.pathname === "/api/tracking") {
-      return env.DB ? handleTracking(request, env.DB) : Response.json({ error: "Base de datos no configurada" }, { status: 503 });
+      return env.DB ? handleTracking(request, env.DB) : noStoreJson({ error: "Base de datos no configurada" }, { status: 503 });
     }
     if (url.pathname === "/api/journey-state") {
-      return env.DB ? handleJourneyState(request, env.DB) : Response.json({ error: "Base de datos no configurada" }, { status: 503 });
+      return env.DB ? handleJourneyState(request, env.DB) : noStoreJson({ error: "Base de datos no configurada" }, { status: 503 });
     }
     if (url.pathname === "/api/road-route") {
       return handleVehicleRoadRoute(request, env.OPENROUTESERVICE_API_KEY);
