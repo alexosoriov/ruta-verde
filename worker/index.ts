@@ -94,6 +94,37 @@ function normalizeJourneyId(value: unknown) {
   return typeof value === "string" && JOURNEY_ID_PATTERN.test(value) ? value : currentJourneyId();
 }
 
+function finiteNumber(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function nonNegativeNumber(value: unknown, fallback = 0) {
+  return Math.max(0, finiteNumber(value, fallback));
+}
+
+function nonNegativeInteger(value: unknown, fallback: number) {
+  return Math.max(0, Math.round(finiteNumber(value, fallback)));
+}
+
+function sanitizeActivities(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 12).flatMap((entry): Array<Required<ActivityPayload>> => {
+    if (!entry || typeof entry !== "object") return [];
+    const item = entry as ActivityPayload;
+    if (item.status !== "done" && item.status !== "absent") return [];
+    const at = finiteNumber(item.at, 0);
+    if (!at) return [];
+    return [{
+      id: typeof item.id === "string" ? item.id.slice(0, 80) : `event-${at}`,
+      stopId: typeof item.stopId === "string" ? item.stopId.slice(0, 40) : "",
+      label: typeof item.label === "string" ? item.label.slice(0, 180) : "Parada registrada",
+      status: item.status,
+      at,
+      kilos: nonNegativeNumber(item.kilos),
+    }];
+  });
+}
+
 async function ensureTrackingTable(db: D1Database) {
   await db.prepare(`
     CREATE TABLE IF NOT EXISTS live_tracking (
@@ -129,43 +160,11 @@ async function ensureTrackingTable(db: D1Database) {
   const existingColumns = new Set(
     ((tableInfo.results ?? []) as Array<{ name?: string }>).map((column) => column.name).filter((name): name is string => Boolean(name)),
   );
-
   for (const column of TRACKING_COLUMNS) {
     if (!existingColumns.has(column.name)) {
       await db.prepare(`ALTER TABLE live_tracking ADD COLUMN ${column.name} ${column.sql}`).run();
     }
   }
-}
-
-function finiteNumber(value: unknown, fallback: number) {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
-}
-
-function nonNegativeNumber(value: unknown, fallback = 0) {
-  return Math.max(0, finiteNumber(value, fallback));
-}
-
-function nonNegativeInteger(value: unknown, fallback: number) {
-  return Math.max(0, Math.round(finiteNumber(value, fallback)));
-}
-
-function sanitizeActivities(value: unknown) {
-  if (!Array.isArray(value)) return [];
-  return value.slice(0, 12).flatMap((entry): Array<Required<ActivityPayload>> => {
-    if (!entry || typeof entry !== "object") return [];
-    const item = entry as ActivityPayload;
-    if (item.status !== "done" && item.status !== "absent") return [];
-    const at = finiteNumber(item.at, 0);
-    if (!at) return [];
-    return [{
-      id: typeof item.id === "string" ? item.id.slice(0, 80) : `event-${at}`,
-      stopId: typeof item.stopId === "string" ? item.stopId.slice(0, 40) : "",
-      label: typeof item.label === "string" ? item.label.slice(0, 180) : "Parada registrada",
-      status: item.status,
-      at,
-      kilos: nonNegativeNumber(item.kilos, 0),
-    }];
-  });
 }
 
 async function handleTracking(request: Request, db: D1Database) {
@@ -176,15 +175,10 @@ async function handleTracking(request: Request, db: D1Database) {
     const journeyId = normalizeJourneyId(url.searchParams.get("journey"));
     const row = await db.prepare("SELECT * FROM live_tracking WHERE id = ?").bind(journeyId).first<Record<string, unknown>>();
     if (!row) return Response.json({ tracking: null }, { headers: { "Cache-Control": "no-store" } });
-
     const updatedAt = finiteNumber(row.updated_at, 0);
     if (Date.now() - updatedAt > TRACKING_STALE_AFTER_MS && row.status !== "finished") {
-      return Response.json(
-        { tracking: null, stale: true, lastUpdatedAt: updatedAt },
-        { headers: { "Cache-Control": "no-store" } },
-      );
+      return Response.json({ tracking: null, stale: true, lastUpdatedAt: updatedAt }, { headers: { "Cache-Control": "no-store" } });
     }
-
     return Response.json({ tracking: row }, { headers: { "Cache-Control": "no-store" } });
   }
 
@@ -196,7 +190,6 @@ async function handleTracking(request: Request, db: D1Database) {
   } catch {
     return Response.json({ error: "Datos inválidos" }, { status: 400 });
   }
-
   if (!Number.isFinite(body.lat) || !Number.isFinite(body.lng) || Math.abs(body.lat) > 90 || Math.abs(body.lng) > 180) {
     return Response.json({ error: "Ubicación inválida" }, { status: 400 });
   }
@@ -222,103 +215,31 @@ async function handleTracking(request: Request, db: D1Database) {
       status, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
-      lat=excluded.lat,
-      lng=excluded.lng,
-      speed=excluded.speed,
-      heading=excluded.heading,
-      accuracy=excluded.accuracy,
-      next_stop=excluded.next_stop,
-      completed=excluded.completed,
-      done=excluded.done,
-      absent=excluded.absent,
-      pending=excluded.pending,
-      total=excluded.total,
-      kilos=excluded.kilos,
-      route_km=excluded.route_km,
-      estimated_minutes=excluded.estimated_minutes,
-      started_at=excluded.started_at,
-      actual_km=excluded.actual_km,
-      moving_minutes=excluded.moving_minutes,
-      stopped_minutes=excluded.stopped_minutes,
-      baseline_route_km=excluded.baseline_route_km,
+      lat=excluded.lat, lng=excluded.lng, speed=excluded.speed,
+      heading=excluded.heading, accuracy=excluded.accuracy,
+      next_stop=excluded.next_stop, completed=excluded.completed,
+      done=excluded.done, absent=excluded.absent, pending=excluded.pending,
+      total=excluded.total, kilos=excluded.kilos, route_km=excluded.route_km,
+      estimated_minutes=excluded.estimated_minutes, started_at=excluded.started_at,
+      actual_km=excluded.actual_km, moving_minutes=excluded.moving_minutes,
+      stopped_minutes=excluded.stopped_minutes, baseline_route_km=excluded.baseline_route_km,
       route_savings_km=excluded.route_savings_km,
       planned_drive_minutes=excluded.planned_drive_minutes,
-      activity_json=excluded.activity_json,
-      status=excluded.status,
+      activity_json=excluded.activity_json, status=excluded.status,
       updated_at=excluded.updated_at
   `).bind(
-    journeyId,
-    body.lat,
-    body.lng,
-    body.speed ?? null,
-    body.heading ?? null,
-    body.accuracy ?? null,
-    typeof body.nextStop === "string" ? body.nextStop.slice(0, 180) : null,
-    completed,
-    done,
-    absent,
-    pending,
-    total,
-    nonNegativeNumber(body.kilos),
-    nonNegativeNumber(body.routeKm),
-    nonNegativeInteger(body.estimatedMinutes, 0),
+    journeyId, body.lat, body.lng, body.speed ?? null, body.heading ?? null,
+    body.accuracy ?? null, typeof body.nextStop === "string" ? body.nextStop.slice(0, 180) : null,
+    completed, done, absent, pending, total, nonNegativeNumber(body.kilos),
+    nonNegativeNumber(body.routeKm), nonNegativeInteger(body.estimatedMinutes, 0),
     body.startedAt === null ? null : finiteNumber(body.startedAt, 0) || null,
-    nonNegativeNumber(body.actualKm),
-    nonNegativeNumber(body.movingMinutes),
-    nonNegativeNumber(body.stoppedMinutes),
-    nonNegativeNumber(body.baselineRouteKm),
-    nonNegativeNumber(body.routeSavingsKm),
-    nonNegativeNumber(body.plannedDriveMinutes),
-    JSON.stringify(activities),
-    status,
-    updatedAt,
+    nonNegativeNumber(body.actualKm), nonNegativeNumber(body.movingMinutes),
+    nonNegativeNumber(body.stoppedMinutes), nonNegativeNumber(body.baselineRouteKm),
+    nonNegativeNumber(body.routeSavingsKm), nonNegativeNumber(body.plannedDriveMinutes),
+    JSON.stringify(activities), status, updatedAt,
   ).run();
 
   return Response.json({ ok: true, journeyId, updatedAt }, { headers: { "Cache-Control": "no-store" } });
-}
-
-type RoadRouteBody = { coordinates?: Array<[number, number]> };
-
-async function handleRoadRoute(request: Request) {
-  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-  let body: RoadRouteBody;
-  try {
-    body = await request.json() as RoadRouteBody;
-  } catch {
-    return Response.json({ error: "Datos inválidos" }, { status: 400 });
-  }
-
-  const coordinates = body.coordinates;
-  if (!Array.isArray(coordinates) || coordinates.length < 2 || coordinates.length > 100) {
-    return Response.json({ error: "Coordenadas inválidas" }, { status: 400 });
-  }
-  const valid = coordinates.every((point) =>
-    Array.isArray(point) && point.length === 2 &&
-    Number.isFinite(point[0]) && Number.isFinite(point[1]) &&
-    Math.abs(point[0]) <= 180 && Math.abs(point[1]) <= 90,
-  );
-  if (!valid) return Response.json({ error: "Coordenadas inválidas" }, { status: 400 });
-
-  const key = coordinates.map(([lng, lat]) => `${lng},${lat}`).join(";");
-  const response = await fetch(
-    `https://router.project-osrm.org/route/v1/driving/${key}?overview=full&geometries=geojson&steps=false`,
-    { headers: { "User-Agent": "Ruta-Verde/1.0" } },
-  );
-  if (!response.ok) return Response.json({ error: "Ruta no disponible" }, { status: 502 });
-  const data = await response.json() as {
-    code?: string;
-    routes?: Array<{ distance?: number; duration?: number; geometry?: { coordinates?: [number, number][] } }>;
-  };
-  const route = data.routes?.[0];
-  if (data.code !== "Ok" || !route?.geometry?.coordinates?.length) {
-    return Response.json({ error: "Ruta no disponible" }, { status: 502 });
-  }
-
-  return Response.json({
-    coordinates: route.geometry.coordinates,
-    distanceMeters: finiteNumber(route.distance, 0),
-    durationSeconds: finiteNumber(route.duration, 0),
-  }, { headers: { "Cache-Control": "public, max-age=3600" } });
 }
 
 const worker = {
@@ -337,17 +258,11 @@ const worker = {
     }
 
     if (url.pathname === "/api/tracking") {
-      return env.DB
-        ? handleTracking(request, env.DB)
-        : Response.json({ error: "Base de datos no configurada" }, { status: 503 });
+      return env.DB ? handleTracking(request, env.DB) : Response.json({ error: "Base de datos no configurada" }, { status: 503 });
     }
-
     if (url.pathname === "/api/journey-state") {
-      return env.DB
-        ? handleJourneyState(request, env.DB)
-        : Response.json({ error: "Base de datos no configurada" }, { status: 503 });
+      return env.DB ? handleJourneyState(request, env.DB) : Response.json({ error: "Base de datos no configurada" }, { status: 503 });
     }
-
     if (url.pathname === "/api/road-route") {
       return handleVehicleRoadRoute(request, env.OPENROUTESERVICE_API_KEY);
     }
