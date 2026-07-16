@@ -61,7 +61,28 @@ const context = { waitUntil() {}, passThroughOnException() {} };
 const environment = (database) => ({
   DB: database,
   ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+  ROUTE_USERNAME: "test-user",
+  ROUTE_PASSWORD: "test-password",
+  ROUTE_SESSION_SECRET: "test-session-secret-with-enough-entropy",
 });
+
+async function loginCookie(worker, env) {
+  const response = await worker.fetch(new Request("http://localhost/api/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: env.ROUTE_USERNAME, password: env.ROUTE_PASSWORD }),
+  }), env, context);
+  assert.equal(response.status, 200);
+  const setCookie = response.headers.get("set-cookie");
+  assert.ok(setCookie);
+  return setCookie.split(";", 1)[0];
+}
+
+function authorizedRequest(url, cookie, init = {}) {
+  const headers = new Headers(init.headers);
+  headers.set("Cookie", cookie);
+  return new Request(url, { ...init, headers });
+}
 
 function snapshot(deviceId, statuses, statusUpdatedAt, updatedAt) {
   return {
@@ -98,12 +119,12 @@ function snapshot(deviceId, statuses, statusUpdatedAt, updatedAt) {
   };
 }
 
-async function save(worker, database, value) {
-  const response = await worker.fetch(new Request("http://localhost/api/journey-state", {
+async function save(worker, env, cookie, value) {
+  const response = await worker.fetch(authorizedRequest("http://localhost/api/journey-state", cookie, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ journeyId: value.journeyId, snapshot: value }),
-  }), environment(database), context);
+  }), env, context);
   assert.equal(response.status, 200);
   return response.json();
 }
@@ -111,12 +132,14 @@ async function save(worker, database, value) {
 test("two devices keep changes made to different homes", async () => {
   const worker = await loadWorker();
   const database = new FakeD1();
+  const env = environment(database);
+  const cookie = await loginCookie(worker, env);
 
-  const first = await save(worker, database, snapshot("phone-a", { "01": "done" }, { "01": 1_000 }, 1_000));
+  const first = await save(worker, env, cookie, snapshot("phone-a", { "01": "done" }, { "01": 1_000 }, 1_000));
   assert.equal(first.snapshot.statuses["01"], "done");
   assert.equal(first.revision, 1);
 
-  const second = await save(worker, database, snapshot("phone-b", { "02": "absent" }, { "02": 2_000 }, 2_000));
+  const second = await save(worker, env, cookie, snapshot("phone-b", { "02": "absent" }, { "02": 2_000 }, 2_000));
   assert.equal(second.snapshot.statuses["01"], "done");
   assert.equal(second.snapshot.statuses["02"], "absent");
   assert.equal(second.revision, 2);
@@ -125,9 +148,11 @@ test("two devices keep changes made to different homes", async () => {
 test("a newer update for the same home wins without deleting other homes", async () => {
   const worker = await loadWorker();
   const database = new FakeD1();
+  const env = environment(database);
+  const cookie = await loginCookie(worker, env);
 
-  await save(worker, database, snapshot("phone-a", { "01": "done", "03": "done" }, { "01": 1_000, "03": 1_000 }, 1_000));
-  const result = await save(worker, database, snapshot("phone-b", { "01": "absent" }, { "01": 3_000 }, 3_000));
+  await save(worker, env, cookie, snapshot("phone-a", { "01": "done", "03": "done" }, { "01": 1_000, "03": 1_000 }, 1_000));
+  const result = await save(worker, env, cookie, snapshot("phone-b", { "01": "absent" }, { "01": 3_000 }, 3_000));
 
   assert.equal(result.snapshot.statuses["01"], "absent");
   assert.equal(result.snapshot.statuses["03"], "done");
