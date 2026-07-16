@@ -2,6 +2,8 @@ export type Stop = {
   id: string;
   name: string;
   address?: string;
+  note?: string;
+  day?: string;
   lat: number;
   lng: number;
   km: number;
