@@ -11,8 +11,13 @@ test("el código público deja vacío el conjunto de paradas hasta autenticar", 
   assert.doesNotMatch(routeData, /name:\s*["'][^"']+["']\s*,\s*address:/u);
 });
 
-test("el bloque privado exige AES-256-GCM autenticado", async () => {
-  const encrypted = await read("worker/private-route-data.ts");
+test("el bloque privado vive separado y exige AES-256-GCM autenticado", async () => {
+  const bridge = await read("worker/private-route-data.ts");
+  const encrypted = await read("worker/vault/sector-map.ts");
+
+  assert.match(bridge, /\.\/vault\/sector-map/u);
+  assert.doesNotMatch(bridge, /PRIVATE_ROUTE_CIPHERTEXT_B64/u);
+
   assert.match(encrypted, /AES-GCM/u);
   assert.match(encrypted, /rawKey\.byteLength !== 32/u);
   assert.match(encrypted, /tagLength: 128/u);
@@ -43,4 +48,13 @@ test("la aplicación carga los datos solo después de iniciar sesión", async ()
   assert.match(page, /\/api\/private-route/u);
   assert.match(page, /installRouteData/u);
   assert.match(page, /type="password"/u);
+});
+
+test("la separación de la bóveda no cambia el mapa ni su fuente de datos", async () => {
+  const worker = await read("worker/index.ts");
+  const routeApp = await read("app/route-app.tsx");
+
+  assert.match(worker, /decryptPrivateRoute\(env\.ROUTE_DATA_KEY\)/u);
+  assert.match(worker, /return noStoreJson\(\{ stops \}\)/u);
+  assert.match(routeApp, /STOPS/u);
 });

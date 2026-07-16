@@ -37,6 +37,12 @@ yarn-error.log*
 /private/
 /private_data/
 *.route-key
+*.plaintext.json
+*.plaintext.csv
+*.plaintext.txt
+/worker/vault/*.json
+/worker/vault/*.csv
+/worker/vault/*.txt
 
 # vercel
 .vercel
