@@ -1,3 +1,5 @@
+import { mergeJourneySnapshots } from "./journey-merge";
+
 type JourneyPayload = {
   journeyId?: string;
   snapshot?: unknown;
@@ -35,6 +37,15 @@ async function ensureTable(db: D1Database) {
   `).run();
 }
 
+function parsePayload(value: string | undefined) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 export async function handleJourneyState(request: Request, db: D1Database) {
   await ensureTable(db);
   const url = new URL(request.url);
@@ -44,12 +55,7 @@ export async function handleJourneyState(request: Request, db: D1Database) {
     const row = await db.prepare("SELECT payload FROM journey_state WHERE id = ?")
       .bind(journeyId)
       .first<{ payload?: string }>();
-    if (!row?.payload) return Response.json({ snapshot: null }, { headers: { "Cache-Control": "no-store" } });
-    try {
-      return Response.json({ snapshot: JSON.parse(row.payload) }, { headers: { "Cache-Control": "no-store" } });
-    } catch {
-      return Response.json({ snapshot: null }, { headers: { "Cache-Control": "no-store" } });
-    }
+    return Response.json({ snapshot: parsePayload(row?.payload) }, { headers: { "Cache-Control": "no-store" } });
   }
 
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
@@ -67,20 +73,23 @@ export async function handleJourneyState(request: Request, db: D1Database) {
 
   const source = body.snapshot as Record<string, unknown>;
   const journeyId = normalizeJourneyId(body.journeyId ?? source.journeyId);
-  const updatedAt = clientTimestamp(source.updatedAt);
-  const payload = JSON.stringify({ ...source, journeyId, updatedAt });
+  const incomingUpdatedAt = clientTimestamp(source.updatedAt);
+  const existing = await db.prepare("SELECT payload, client_updated_at FROM journey_state WHERE id = ?")
+    .bind(journeyId)
+    .first<{ payload?: string; client_updated_at?: number }>();
+  const serverUpdatedAt = Date.now();
+  const merged = mergeJourneySnapshots(parsePayload(existing?.payload), {
+    ...source,
+    journeyId,
+    updatedAt: incomingUpdatedAt,
+  }, serverUpdatedAt);
+  const payload = JSON.stringify(merged);
+
   if (new TextEncoder().encode(payload).byteLength > MAX_JOURNEY_BYTES) {
     return Response.json({ error: "La jornada es demasiado grande" }, { status: 413 });
   }
 
-  const existing = await db.prepare("SELECT client_updated_at FROM journey_state WHERE id = ?")
-    .bind(journeyId)
-    .first<{ client_updated_at?: number }>();
-  if ((existing?.client_updated_at ?? 0) > updatedAt) {
-    return Response.json({ ok: true, journeyId, ignored: true }, { headers: { "Cache-Control": "no-store" } });
-  }
-
-  const serverUpdatedAt = Date.now();
+  const latestClientUpdate = Math.max(existing?.client_updated_at ?? 0, incomingUpdatedAt);
   await db.prepare(`
     INSERT INTO journey_state (id, payload, client_updated_at, server_updated_at)
     VALUES (?, ?, ?, ?)
@@ -88,7 +97,17 @@ export async function handleJourneyState(request: Request, db: D1Database) {
       payload=excluded.payload,
       client_updated_at=excluded.client_updated_at,
       server_updated_at=excluded.server_updated_at
-  `).bind(journeyId, payload, updatedAt, serverUpdatedAt).run();
+  `).bind(journeyId, payload, latestClientUpdate, serverUpdatedAt).run();
 
-  return Response.json({ ok: true, journeyId, updatedAt: serverUpdatedAt }, { headers: { "Cache-Control": "no-store" } });
+  const revision = typeof (merged as { sync?: { serverRevision?: unknown } }).sync?.serverRevision === "number"
+    ? (merged as { sync: { serverRevision: number } }).sync.serverRevision
+    : 0;
+
+  return Response.json({
+    ok: true,
+    journeyId,
+    updatedAt: serverUpdatedAt,
+    revision,
+    snapshot: merged,
+  }, { headers: { "Cache-Control": "no-store" } });
 }
