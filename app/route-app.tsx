@@ -6,6 +6,7 @@ import Image from "next/image";
 import { ROUTE_DISTANCE_KM, STOPS, type Stop } from "./route-data";
 import OfflineSupport from "./offline-support";
 import AppInstall from "./app-install";
+import { EMPTY_GPS_METRICS, type GpsMetrics, type TrackingActivity } from "./tracking-types";
 import {
   currentJourneyId,
   flushJourneyOutbox,
@@ -93,6 +94,7 @@ export default function RouteApp() {
   const [lastPosition, setLastPosition] = useState<StoredPosition | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("loading");
   const [gpsTracking, setGpsTracking] = useState(false);
+  const [gpsMetrics, setGpsMetrics] = useState<GpsMetrics>(EMPTY_GPS_METRICS);
   const lastAutoReorderAtRef = useRef(0);
   const autoRoutingRef = useRef(false);
 
@@ -168,6 +170,15 @@ export default function RouteApp() {
     return result;
   }, [ordered]);
   const activityByStop = useMemo(() => new Map(activity.map((entry) => [entry.stopId, entry])), [activity]);
+  const trackingActivity = useMemo<TrackingActivity[]>(() => activity.map((entry) => ({
+    id: entry.id,
+    stopId: entry.stopId,
+    label: entry.stopAddress || entry.stopName,
+    status: entry.status,
+    at: entry.at,
+    kilos: Number((details[entry.stopId]?.kilos || "0").replace(",", ".")) || 0,
+  })), [activity, details]);
+  const plannedDriveMinutes = Math.max(1, Math.round((ROUTE_DISTANCE_KM / 24) * 60));
 
   const addressLabel = (stop: Stop) => stop.address ?? `Punto GPS ${stop.id}`;
   const residentLabel = (stop: Stop) => presentationMode ? "Nombre protegido" : stop.name;
@@ -267,6 +278,7 @@ export default function RouteApp() {
       setCompletedAt(null);
       setActivity([]);
       setLastPosition(null);
+      setGpsMetrics(EMPTY_GPS_METRICS);
       setNotice("Jornada reiniciada. La ruta optimizada se mantiene disponible.");
     }
   };
@@ -477,19 +489,29 @@ export default function RouteApp() {
             total={allStops.length}
             kilos={totalKilos}
             routeKm={ROUTE_DISTANCE_KM}
+            baselineRouteKm={ROUTE_DISTANCE_KM}
+            routeSavingsKm={0}
+            plannedDriveMinutes={plannedDriveMinutes}
             estimatedMinutes={estimatedMinutes}
             startedAt={startedAt}
             privacyMode={presentationMode}
+            activity={trackingActivity}
+            initialMetrics={gpsMetrics}
+            startSignal={0}
+            resetSignal={0}
+            pickLocationMode={false}
             onTrackingChange={(active: boolean) => {
               setGpsTracking(active);
               if (active && !startedAt) setStartedAt(Date.now());
             }}
             onArrival={(stop: Stop, distanceMeters: number) => setArrival({ stop, distance: distanceMeters })}
+            onGpsMetrics={setGpsMetrics}
+            onLocationPicked={(lat: number, lng: number) => setLastPosition({ lat, lng, accuracy: null, at: Date.now() })}
           />
           <div className="stats-row">
             <article><span>Recorrido planificado</span><strong>4,5 km</strong><small>ruta base entre las 41 viviendas</small></article>
             <article><span>Tiempo transcurrido</span><strong>{startedAt ? `${Math.floor(elapsedMinutes / 60)} h ${elapsedMinutes % 60} min` : "Sin iniciar"}</strong><small>{startedAt ? `inicio ${new Date(startedAt).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}` : "comienza al activar la jornada"}</small></article>
-            <article><span>Tiempo restante</span><strong>~{Math.floor(estimatedMinutes / 60)} h {estimatedMinutes % 60} min</strong><small>{completedAt ? `terminado ${new Date(completedAt).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}` : "incluye 2 min por retiro"}</small></article>
+            <article><span>Distancia real</span><strong>{gpsMetrics.actualKm.toFixed(2).replace(".", ",")} km</strong><small>{completedAt ? `terminado ${new Date(completedAt).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}` : `restante aproximado ${Math.floor(estimatedMinutes / 60)} h ${estimatedMinutes % 60} min`}</small></article>
           </div>
         </div>
 
@@ -504,7 +526,7 @@ export default function RouteApp() {
                 <span><strong>Estado:</strong> Pendiente</span>
                 <span><strong>Tipo de residuo:</strong> {currentDetail?.material || "Mixto"}</span>
                 <span><strong>Observaciones:</strong> {currentDetail?.note || "Sin observaciones"}</span>
-                <span><strong>Última ubicación:</strong> {lastPosition ? `${new Date(lastPosition.at).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })} · precisión ${Math.round(lastPosition.accuracy ?? 0)} m` : "Aún no registrada"}</span>
+                <span><strong>Última ubicación:</strong> {lastPosition ? `${new Date(lastPosition.at).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })} · precisión ${lastPosition.accuracy === null ? "GPS" : `${Math.round(lastPosition.accuracy)} m`}` : "Aún no registrada"}</span>
               </div>
               <a className="primary-action" href={mapsUrl(current, vehicle)} target="_blank" rel="noreferrer">Abrir navegación</a>
               <button className="complete-action" onClick={() => setStatus(current.id, "done")}>✓ Retiro realizado · siguiente</button>
@@ -569,7 +591,7 @@ export default function RouteApp() {
           </details>
           <button className="export-button" onClick={exportCsv}>Descargar informe CSV</button>
         </div>
-        <div className="list-footer"><span>Estados, horas, ubicación, kilos y observaciones se guardan automáticamente y se sincronizan al volver internet.</span><button onClick={reset}>Reiniciar jornada</button></div>
+        <div className="list-footer"><span>Estados, horas, ubicación, kilómetros, kilos y observaciones se guardan automáticamente y se sincronizan al volver internet.</span><button onClick={reset}>Reiniciar jornada</button></div>
       </section>
       </>}
 
