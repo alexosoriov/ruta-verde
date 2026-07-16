@@ -1,0 +1,27 @@
+"use client";
+
+import { useEffect, useState, useSyncExternalStore } from "react";
+
+function subscribeOnline(callback: () => void) {
+  window.addEventListener("online", callback);
+  window.addEventListener("offline", callback);
+  return () => {
+    window.removeEventListener("online", callback);
+    window.removeEventListener("offline", callback);
+  };
+}
+
+export default function OfflineSupport() {
+  const online = useSyncExternalStore(subscribeOnline, () => navigator.onLine, () => true);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/sw.js").then(() => setReady(true)).catch(() => setReady(false));
+    }
+  }, []);
+
+  return <div className={`network-status ${online ? "online" : "offline"}`} role="status">
+    <span />{online ? (ready ? "En línea · modo offline preparado" : "En línea") : "Sin internet · guardando cambios en el teléfono"}
+  </div>;
+}
