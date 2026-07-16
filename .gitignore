@@ -27,13 +27,8 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# environment and Cloudflare local secrets
+# env files (can opt-in for committing if needed)
 .env*
-.dev.vars
-.dev.vars.*
-
-# private operational data must never be committed
-/private/
 
 # vercel
 .vercel
