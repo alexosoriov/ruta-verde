@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Image from "next/image";
 import * as L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { STOPS } from "./route-data";
@@ -166,10 +165,10 @@ export default function ManagerPanel({ localSummary }: Props) {
       </div>
 
       <div className="manager-kpi-grid">
-        <article className="success"><b className="manager-kpi-icon">✓</b><span>Retiros realizados</span><strong>{done}</strong><small>de {total} viviendas</small></article>
-        <article className="warning"><b className="manager-kpi-icon">!</b><span>Ausentes</span><strong>{absent}</strong><small>visitas sin retiro</small></article>
-        <article className="pending"><b className="manager-kpi-icon">⌛</b><span>Pendientes</span><strong>{pending}</strong><small>por visitar</small></article>
-        <article className="weight"><b className="manager-kpi-icon">kg</b><span>Material registrado</span><strong>{kilos > 0 ? `${kilos.toLocaleString("es-CL", { maximumFractionDigits: 1 })} kg` : "—"}</strong><small>{kilos > 0 ? "acumulado de hoy" : "por medir en terreno"}</small></article>
+        <article className="success"><span>Retiros realizados</span><strong>{done}</strong><small>de {total} viviendas</small></article>
+        <article className="warning"><span>Ausentes</span><strong>{absent}</strong><small>visitas sin retiro</small></article>
+        <article><span>Pendientes</span><strong>{pending}</strong><small>por visitar</small></article>
+        <article><span>Material registrado</span><strong>{kilos > 0 ? `${kilos.toLocaleString("es-CL", { maximumFractionDigits: 1 })} kg` : "—"}</strong><small>{kilos > 0 ? "acumulado de hoy" : "por medir en terreno"}</small></article>
       </div>
 
       <div className="manager-grid">
@@ -195,12 +194,6 @@ export default function ManagerPanel({ localSummary }: Props) {
           </div>
 
           <div className="manager-next"><span>Próxima parada</span><strong>{nextStop || (reviewed >= total ? "Recorrido finalizado" : "Esperando inicio")}</strong></div>
-
-          <div className="manager-status-legend" aria-label="Leyenda de estados">
-            <span className="done"><i />Retirado</span><span className="absent"><i />Ausente</span><span className="pending"><i />Pendiente</span>
-          </div>
-
-          {reviewed >= total && <div className="manager-complete"><Image src="/icon-192.png" width={72} height={72} alt="Personaje de Ruta Verde" unoptimized /><span><strong>Jornada completada</strong><small>El equipo revisó todas las viviendas.</small></span></div>}
 
           <div className="manager-activity">
             <div className="manager-activity-head"><strong>Actividad reciente</strong><span>{useLocal ? "Este dispositivo" : "En vivo"}</span></div>

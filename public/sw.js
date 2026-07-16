@@ -1,4 +1,4 @@
-const CACHE = "santuario-route-v8";
+const CACHE = "santuario-route-v9";
 const CORE = ["/", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {

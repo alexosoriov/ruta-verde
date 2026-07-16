@@ -85,7 +85,6 @@ export default function RouteApp() {
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [presentationMode, setPresentationMode] = useState(false);
   const [simulationOpen, setSimulationOpen] = useState(false);
-  const [driverTab, setDriverTab] = useState<"route" | "map">("route");
   const [clock, setClock] = useState(() => Date.now());
 
   useEffect(() => {
@@ -162,15 +161,6 @@ export default function RouteApp() {
 
   const addressLabel = (stop: Stop) => stop.address ?? `Punto GPS ${stop.id}`;
   const residentLabel = (stop: Stop) => presentationMode ? "Nombre protegido" : stop.name;
-
-  const openDriverSection = (section: "route" | "map") => {
-    setView("driver");
-    setDriverTab(section);
-    window.setTimeout(() => {
-      const target = document.getElementById(section === "map" ? "mapa" : "recorrido");
-      if (target) window.scrollTo({ top: target.getBoundingClientRect().top + window.scrollY - 12, behavior: "smooth" });
-    }, 80);
-  };
 
   const setStatus = (id: string, status: StopStatus) => {
     setStatuses((old) => ({ ...old, [id]: status }));
@@ -285,6 +275,11 @@ export default function RouteApp() {
         <div className="header-actions"><AppInstall /><div className="header-date"><span>Viernes · recorrido activo</span><strong>{allStops.length} casas</strong></div></div>
       </header>
 
+      <nav className="app-tabs" aria-label="Cambiar vista de la aplicación">
+        <button className={view === "driver" ? "active" : ""} onClick={() => setView("driver")}>Conductor</button>
+        <button className={view === "manager" ? "active" : ""} onClick={() => setView("manager")}>Jefatura · seguimiento</button>
+      </nav>
+
       {view === "manager" ? <ManagerPanel localSummary={{
         total: allStops.length,
         done,
@@ -299,33 +294,39 @@ export default function RouteApp() {
       }} /> : <>
 
       <section className="presentation-bar" aria-label="Ayuda para la demostración">
-        <div><strong>Modo de trabajo</strong><span>Direcciones visibles · nombres protegibles · avance guardado</span></div>
+        <div><strong>Demostración sugerida</strong><span>Activa GPS → registra 2 retiros y 1 ausencia → abre Jefatura</span></div>
         <div className="presentation-actions">
           <button className="simulation-launch" onClick={() => setSimulationOpen(true)}>▶ Probar simulación</button>
           <button className={presentationMode ? "active" : ""} onClick={() => setPresentationMode((value) => !value)}>{presentationMode ? "Mostrar nombres" : "Ocultar nombres"}</button>
         </div>
       </section>
 
-      <section className="driver-overview" id="recorrido">
-        <div className="overview-heading">
-          <p className="eyebrow"><span /> Santuario · Viernes</p>
-          <h1>Recorrido de hoy</h1>
-          <p>La próxima dirección y las acciones importantes están siempre a mano.</p>
-        </div>
-        <div className="overview-progress">
-          <div className="progress-head"><span>Avance de jornada</span><strong>{Math.round(((done + absent) / allStops.length) * 100)}%</strong></div>
-          <div className="progress-track"><i style={{ width: `${((done + absent) / allStops.length) * 100}%` }} /></div>
-          <div className="state-legend" aria-label="Estados del recorrido">
-            <span className="done"><i />{done} retirados</span>
-            <span className="next"><i />{current ? "1 siguiente" : "Sin siguiente"}</span>
-            <span className="absent"><i />{absent} ausentes</span>
-            <span className="pending"><i />{pending} pendientes</span>
+      <section className="hero">
+        <div>
+          <p className="eyebrow"><span /> Jornada Santuario · Viernes</p>
+          <h1>41 viviendas.<br />Un recorrido claro.</h1>
+          <p className="lead">Ruta Verde ordena las paradas, guía al conductor y convierte cada retiro en avance visible para jefatura.</p>
+          <div className="hero-actions">
+            <a href="#recorrido" onClick={() => { if (!startedAt) setStartedAt(Date.now()); }}>Comenzar recorrido</a>
+            <button onClick={() => setView("manager")}>Ver panel de jefatura</button>
           </div>
+        </div>
+        <div className="progress-card">
+          <div className="progress-head"><span>Avance de hoy</span><strong>{Math.round(((done + absent) / allStops.length) * 100)}%</strong></div>
+          <div className="progress-track"><i style={{ width: `${((done + absent) / allStops.length) * 100}%` }} /></div>
+          <div className="progress-numbers"><strong>{done}</strong> realizadas <span>·</span> <strong>{pending}</strong> pendientes <span>·</span> <strong>{absent}</strong> ausentes</div>
         </div>
       </section>
 
-      <section className="workspace">
-        <div className="map-column" id="mapa">
+      <section className="workflow-strip" aria-label="Flujo de trabajo">
+        <div><b>1</b><span><strong>Ubicar</strong>Activa el GPS</span></div>
+        <div><b>2</b><span><strong>Navegar</strong>Sigue la próxima parada</span></div>
+        <div><b>3</b><span><strong>Registrar</strong>Realizado o ausente</span></div>
+        <div><b>4</b><span><strong>Supervisar</strong>Revisa el avance</span></div>
+      </section>
+
+      <section className="workspace" id="recorrido">
+        <div className="map-column">
           <LiveMap
             stops={ordered}
             statuses={statuses}
@@ -351,34 +352,31 @@ export default function RouteApp() {
           </div>
         </div>
 
-        <aside className="next-card" key={current?.id ?? "finished"}>
+        <aside className="next-card">
           <div className="next-label"><span className="live-dot" /> Siguiente retiro</div>
           {current ? (
             <>
-              <div className="next-meta"><span>Parada {String(ordered.findIndex((stop) => stop.id === current.id) + 1).padStart(2, "0")}</span><span>{current.km.toFixed(2).replace(".", ",")} km</span></div>
+              <div className="next-number">{ordered.findIndex((stop) => stop.id === current.id) + 1}</div>
               <h2>{addressLabel(current)}</h2>
-              <p className={`next-resident ${presentationMode ? "protected" : ""}`}>{residentLabel(current)}</p>
-              <a className="primary-action" href={mapsUrl(current, vehicle)} target="_blank" rel="noreferrer"><span aria-hidden="true">↗</span> Navegar</a>
-              <button className="complete-action" onClick={() => setStatus(current.id, "done")}><span aria-hidden="true">✓</span> Retirado</button>
-              <button className="absent-action" onClick={() => setStatus(current.id, "absent")}><span aria-hidden="true">!</span> Ausente</button>
+              <p>{residentLabel(current)} · km {current.km.toFixed(2).replace(".", ",")}</p>
+              <a className="primary-action" href={mapsUrl(current, vehicle)} target="_blank" rel="noreferrer">Abrir navegación</a>
+              <button className="complete-action" onClick={() => setStatus(current.id, "done")}>✓ Retiro realizado · siguiente</button>
+              <button className="absent-action" onClick={() => setStatus(current.id, "absent")}>No estaba · marcar ausente</button>
             </>
           ) : (
-            <div className="finished"><Image src="/icon-192.png" width={92} height={92} alt="Personaje de Ruta Verde" unoptimized /><strong>¡Recorrido terminado!</strong><p>Las {allStops.length} viviendas ya fueron revisadas. Buen trabajo.</p></div>
+            <div className="finished"><strong>Recorrido terminado</strong><p>Las {allStops.length} casas ya fueron revisadas.</p></div>
           )}
-          <details className="next-options">
-            <summary>Más opciones del recorrido <span>＋</span></summary>
-            <div className="quick-settings">
-              <label>Vehículo<select value={vehicle} onChange={(e) => setVehicle(e.target.value)}><option>Camioneta</option><option>Camión</option><option>Auto</option><option>Bicicleta</option></select></label>
-              <button className="optimize-button" onClick={optimizeRoute} disabled={optimizing}>{optimizing ? "Optimizando…" : optimizedIds.length ? "Optimizar nuevamente" : "Optimizar ruta por calles"}</button>
-              <button onClick={startNearMe}>Comenzar por el extremo más cercano</button>
-              <button onClick={() => setReverse((v) => !v)}>Invertir sentido</button>
-            </div>
-            <div className="segment-box">
-              <strong>Navegar el recorrido por tramos</strong>
-              <p>Google Maps limita las paradas; por eso van separadas automáticamente.</p>
-              <div>{segments.map((segment, index) => <a key={segment[0].id} href={segmentUrl(segment, vehicle)} target="_blank" rel="noreferrer">Tramo {index + 1}</a>)}</div>
-            </div>
-          </details>
+          <div className="quick-settings">
+            <label>Vehículo<select value={vehicle} onChange={(e) => setVehicle(e.target.value)}><option>Camioneta</option><option>Camión</option><option>Auto</option><option>Bicicleta</option></select></label>
+            <button className="optimize-button" onClick={optimizeRoute} disabled={optimizing}>{optimizing ? "Optimizando…" : optimizedIds.length ? "Optimizar nuevamente" : "Optimizar ruta por calles"}</button>
+            <button onClick={startNearMe}>Comenzar por el extremo más cercano</button>
+            <button onClick={() => setReverse((v) => !v)}>Invertir sentido</button>
+          </div>
+          <div className="segment-box">
+            <strong>Navegar el recorrido por tramos</strong>
+            <p>Google Maps limita las paradas; por eso van separadas automáticamente.</p>
+            <div>{segments.map((segment, index) => <a key={segment[0].id} href={segmentUrl(segment, vehicle)} target="_blank" rel="noreferrer">Tramo {index + 1}</a>)}</div>
+          </div>
           {notice && <div className="notice" role="status">{notice}</div>}
         </aside>
       </section>
@@ -426,12 +424,6 @@ export default function RouteApp() {
         <div className="list-footer"><span>Avances, kilos y observaciones quedan guardados en este dispositivo.</span><button onClick={reset}>Reiniciar jornada</button></div>
       </section>
       </>}
-
-      <nav className="bottom-nav" aria-label="Navegación principal">
-        <button className={view === "driver" && driverTab === "route" ? "active" : ""} onClick={() => openDriverSection("route")}><span aria-hidden="true">↻</span><strong>Recorrido</strong></button>
-        <button className={view === "driver" && driverTab === "map" ? "active" : ""} onClick={() => openDriverSection("map")}><span aria-hidden="true">⌖</span><strong>Mapa</strong></button>
-        <button className={view === "manager" ? "active" : ""} onClick={() => setView("manager")}><span aria-hidden="true">▦</span><strong>Jefatura</strong></button>
-      </nav>
 
       {arrival && <div className="arrival-backdrop" role="dialog" aria-modal="true" aria-labelledby="arrival-title">
         <div className="arrival-card">
