@@ -17,6 +17,12 @@ function normalizeRole(value: unknown): UserRole | null {
   return value === "driver" || value === "manager" || value === "superadmin" ? value : null;
 }
 
+function connectionError(fallback: string) {
+  return typeof navigator !== "undefined" && !navigator.onLine
+    ? "No hay conexión. Conéctate a internet para validar la sesión y luego podrás continuar aunque la señal se interrumpa."
+    : fallback;
+}
+
 export default function Home() {
   const [phase, setPhase] = useState<Phase>("checking");
   const [username, setUsername] = useState("");
@@ -28,7 +34,12 @@ export default function Home() {
   const loadPrivateApp = useCallback(async (nextRole: UserRole) => {
     setPhase("loading");
     setMessage("");
-    const response = await fetch("/api/private-route", { cache: "no-store" });
+    let response: Response;
+    try {
+      response = await fetch("/api/private-route", { cache: "no-store" });
+    } catch {
+      throw new Error(connectionError("No fue posible conectar con el servidor protegido."));
+    }
     if (response.status === 401) {
       clearRouteData();
       setRole(null);
@@ -69,7 +80,8 @@ export default function Home() {
       })
       .catch((error: unknown) => {
         if (!active) return;
-        setMessage(error instanceof Error ? error.message : "No fue posible comprobar la sesión.");
+        const fallback = error instanceof Error ? error.message : "No fue posible comprobar la sesión.";
+        setMessage(connectionError(fallback));
         setPhase("error");
       });
     return () => { active = false; };
@@ -95,7 +107,8 @@ export default function Home() {
       setPassword("");
       await loadPrivateApp(nextRole);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "No fue posible iniciar sesión.");
+      const fallback = error instanceof Error ? error.message : "No fue posible iniciar sesión.";
+      setMessage(connectionError(fallback));
       setPhase("login");
     }
   };
@@ -113,43 +126,43 @@ export default function Home() {
   if (phase === "ready" && ProtectedApp && role) {
     return (
       <>
-        <div
-          aria-label={`Sesión de ${ROLE_LABELS[role]}`}
-          style={{ position: "fixed", left: 14, bottom: 14, zIndex: 5000, borderRadius: 999, padding: "9px 14px", background: "rgba(255,255,255,.95)", color: "#173e33", fontWeight: 900, boxShadow: "0 8px 24px rgba(0,0,0,.16)", border: "1px solid rgba(23,62,51,.12)", fontSize: 12 }}
-        >
-          Sesión: {ROLE_LABELS[role]}
+        <div className="session-dock" aria-label={`Sesión de ${ROLE_LABELS[role]}`}>
+          <span className="session-role">Sesión: {ROLE_LABELS[role]}</span>
+          <button className="logout-button" type="button" onClick={logout} aria-label="Cerrar sesión de Ruta Verde">
+            Cerrar sesión
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={logout}
-          style={{ position: "fixed", right: 14, bottom: 14, zIndex: 5000, border: 0, borderRadius: 999, padding: "10px 15px", background: "#173e33", color: "white", fontWeight: 800, boxShadow: "0 8px 24px rgba(0,0,0,.2)" }}
-        >
-          Cerrar sesión
-        </button>
         <ProtectedApp />
       </>
     );
   }
 
   return (
-    <main style={{ minHeight: "100vh", display: "grid", placeItems: "center", padding: 24, background: "linear-gradient(145deg,#eaf4ee,#f7f4df)" }}>
-      <section style={{ width: "min(100%,420px)", padding: 28, borderRadius: 24, background: "rgba(255,255,255,.96)", boxShadow: "0 24px 70px rgba(23,62,51,.18)", border: "1px solid rgba(23,62,51,.1)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 22 }}>
+    <main className="auth-screen">
+      <section className="auth-card" aria-labelledby="auth-title">
+        <div className="auth-brand">
           <Image src="/icon-192.png" width={58} height={58} alt="Ruta Verde" priority unoptimized />
-          <div><span style={{ display: "block", color: "#587066", fontSize: 12, fontWeight: 800 }}>Acceso protegido por rol</span><strong style={{ color: "#173e33", fontSize: 22 }}>Ruta Verde</strong></div>
+          <div><span className="auth-kicker">Acceso protegido por rol</span><strong className="auth-title" id="auth-title">Ruta Verde</strong></div>
         </div>
 
         {phase === "checking" || phase === "loading" ? (
-          <div role="status" style={{ padding: "18px 0", color: "#365c50", fontWeight: 700 }}>Verificando acceso y descifrando el recorrido…</div>
+          <div className="auth-status" role="status" aria-live="polite">Verificando acceso y descifrando el recorrido…</div>
         ) : phase === "error" ? (
-          <div><p style={{ color: "#a02d2d", lineHeight: 1.5 }}>{message}</p><button type="button" onClick={() => window.location.reload()} style={{ width: "100%", padding: 13, border: 0, borderRadius: 12, background: "#173e33", color: "white", fontWeight: 800 }}>Reintentar</button></div>
+          <div>
+            <p className="auth-error" role="alert">{message}</p>
+            <button className="auth-submit" type="button" onClick={() => window.location.reload()}>Reintentar</button>
+          </div>
         ) : (
-          <form onSubmit={login} style={{ display: "grid", gap: 14 }}>
-            <p style={{ margin: 0, color: "#587066", lineHeight: 1.55 }}>Conductor, Jefatura y Superadministrador ingresan con cuentas distintas. Nombres, direcciones, notas y coordenadas permanecen cifrados.</p>
-            <label style={{ display: "grid", gap: 6, color: "#173e33", fontWeight: 800 }}>Usuario<input autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={(event) => setUsername(event.target.value)} required style={{ padding: 13, border: "1px solid #bed0c8", borderRadius: 12, font: "inherit" }} /></label>
-            <label style={{ display: "grid", gap: 6, color: "#173e33", fontWeight: 800 }}>Contraseña<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required style={{ padding: 13, border: "1px solid #bed0c8", borderRadius: 12, font: "inherit" }} /></label>
-            {message && <p role="alert" style={{ margin: 0, color: "#a02d2d", fontWeight: 700 }}>{message}</p>}
-            <button type="submit" style={{ padding: 14, border: 0, borderRadius: 12, background: "#173e33", color: "white", fontWeight: 900, fontSize: 15 }}>Entrar a Ruta Verde</button>
+          <form className="auth-form" onSubmit={login} autoComplete="on">
+            <p className="auth-description">Conductor, Jefatura y Superadministrador ingresan con cuentas distintas. Nombres, direcciones, notas y coordenadas permanecen cifrados.</p>
+            <label className="auth-field">Usuario
+              <input className="auth-input" autoComplete="username" autoCapitalize="none" spellCheck={false} enterKeyHint="next" value={username} onChange={(event) => setUsername(event.target.value)} required />
+            </label>
+            <label className="auth-field">Contraseña
+              <input className="auth-input" type="password" autoComplete="current-password" enterKeyHint="go" value={password} onChange={(event) => setPassword(event.target.value)} required />
+            </label>
+            {message && <p className="auth-alert" role="alert" aria-live="assertive">{message}</p>}
+            <button className="auth-submit" type="submit">Entrar a Ruta Verde</button>
           </form>
         )}
       </section>
