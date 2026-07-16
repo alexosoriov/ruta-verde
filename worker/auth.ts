@@ -2,11 +2,20 @@ export type SecurityEnv = {
   ROUTE_USERNAME?: string;
   ROUTE_PASSWORD?: string;
   ROUTE_SESSION_SECRET?: string;
+  DB?: D1Database;
 };
 
-const COOKIE_NAME = "rv_session";
-const SESSION_SECONDS = 8 * 60 * 60;
+const HTTPS_COOKIE_NAME = "__Host-rv_session";
+const HTTP_COOKIE_NAME = "rv_session_dev";
+const SESSION_SECONDS = 4 * 60 * 60;
+const ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
+const MAX_ATTEMPTS = 5;
+const MAX_BLOCK_MS = 24 * 60 * 60 * 1000;
 const encoder = new TextEncoder();
+
+function cookieName(request: Request) {
+  return new URL(request.url).protocol === "https:" ? HTTPS_COOKIE_NAME : HTTP_COOKIE_NAME;
+}
 
 function base64Url(bytes: Uint8Array) {
   let binary = "";
@@ -48,8 +57,15 @@ async function constantTimeEqual(left: string, right: string) {
   return difference === 0;
 }
 
+function noStoreJson(body: unknown, init: ResponseInit = {}) {
+  const headers = new Headers(init.headers);
+  headers.set("Cache-Control", "no-store");
+  headers.set("Content-Type", "application/json; charset=utf-8");
+  return new Response(JSON.stringify(body), { ...init, headers });
+}
+
 export function authConfigured(env: SecurityEnv) {
-  return Boolean(env.ROUTE_USERNAME && env.ROUTE_PASSWORD && env.ROUTE_SESSION_SECRET);
+  return Boolean(env.ROUTE_USERNAME && env.ROUTE_PASSWORD && env.ROUTE_SESSION_SECRET && env.DB);
 }
 
 async function createSessionToken(secret: string) {
@@ -72,20 +88,93 @@ async function validSessionToken(token: string | null, secret: string) {
 
 export async function isAuthorized(request: Request, env: SecurityEnv) {
   if (!authConfigured(env)) return false;
-  return validSessionToken(cookieValue(request, COOKIE_NAME), env.ROUTE_SESSION_SECRET!);
+  return validSessionToken(cookieValue(request, cookieName(request)), env.ROUTE_SESSION_SECRET!);
 }
 
-function noStoreJson(body: unknown, init: ResponseInit = {}) {
-  const headers = new Headers(init.headers);
-  headers.set("Cache-Control", "no-store");
-  headers.set("Content-Type", "application/json; charset=utf-8");
-  return new Response(JSON.stringify(body), { ...init, headers });
+async function ensureRateLimitTable(db: D1Database) {
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS auth_rate_limit (
+      id TEXT PRIMARY KEY,
+      attempts INTEGER NOT NULL,
+      window_started INTEGER NOT NULL,
+      blocked_until INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `).run();
+}
+
+async function rateLimitKey(scope: string, value: string, secret: string) {
+  return base64Url(await hmac(`${scope}|${value}`, secret));
+}
+
+function requestIp(request: Request) {
+  return request.headers.get("CF-Connecting-IP") ??
+    request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim() ??
+    "unknown";
+}
+
+async function rateLimitIds(request: Request, username: string, secret: string) {
+  const normalized = username.trim().toLocaleLowerCase("es-CL");
+  return Promise.all([
+    rateLimitKey("ip-user", `${requestIp(request)}|${normalized}`, secret),
+    rateLimitKey("user", normalized || "empty", secret),
+  ]);
+}
+
+async function blockedFor(db: D1Database, ids: string[]) {
+  const now = Date.now();
+  let retryAfterMs = 0;
+  for (const id of ids) {
+    const row = await db.prepare("SELECT blocked_until FROM auth_rate_limit WHERE id = ?")
+      .bind(id)
+      .first<{ blocked_until?: number }>();
+    retryAfterMs = Math.max(retryAfterMs, Math.max(0, (row?.blocked_until ?? 0) - now));
+  }
+  return retryAfterMs;
+}
+
+async function recordFailure(db: D1Database, ids: string[]) {
+  const now = Date.now();
+  let longestBlock = 0;
+  for (const id of ids) {
+    const row = await db.prepare("SELECT attempts, window_started FROM auth_rate_limit WHERE id = ?")
+      .bind(id)
+      .first<{ attempts?: number; window_started?: number }>();
+    const inWindow = row?.window_started && now - row.window_started <= ATTEMPT_WINDOW_MS;
+    const attempts = inWindow ? (row?.attempts ?? 0) + 1 : 1;
+    const windowStarted = inWindow ? row!.window_started! : now;
+    const blockDuration = attempts >= MAX_ATTEMPTS
+      ? Math.min(MAX_BLOCK_MS, ATTEMPT_WINDOW_MS * (2 ** Math.min(6, attempts - MAX_ATTEMPTS)))
+      : 0;
+    const blockedUntil = blockDuration ? now + blockDuration : 0;
+    longestBlock = Math.max(longestBlock, blockDuration);
+    await db.prepare(`
+      INSERT INTO auth_rate_limit (id, attempts, window_started, blocked_until, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        attempts=excluded.attempts,
+        window_started=excluded.window_started,
+        blocked_until=excluded.blocked_until,
+        updated_at=excluded.updated_at
+    `).bind(id, attempts, windowStarted, blockedUntil, now).run();
+  }
+  return longestBlock;
+}
+
+async function clearFailures(db: D1Database, ids: string[]) {
+  for (const id of ids) await db.prepare("DELETE FROM auth_rate_limit WHERE id = ?").bind(id).run();
+}
+
+function sessionCookie(request: Request, token: string, maxAge: number) {
+  const secure = new URL(request.url).protocol === "https:";
+  const name = cookieName(request);
+  return `${name}=${token}; HttpOnly${secure ? "; Secure" : ""}; SameSite=Strict; Path=/; Max-Age=${maxAge}`;
 }
 
 export async function handleSessionRequest(request: Request, env: SecurityEnv) {
   if (!authConfigured(env)) {
     return noStoreJson(
-      { error: "La seguridad no está configurada en el servidor." },
+      { error: "La seguridad o la base de datos no están configuradas en el servidor." },
       { status: 503 },
     );
   }
@@ -95,10 +184,9 @@ export async function handleSessionRequest(request: Request, env: SecurityEnv) {
   }
 
   if (request.method === "DELETE") {
-    const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
     return noStoreJson(
       { ok: true },
-      { headers: { "Set-Cookie": `${COOKIE_NAME}=; HttpOnly${secure}; SameSite=Strict; Path=/; Max-Age=0` } },
+      { headers: { "Set-Cookie": sessionCookie(request, "", 0) } },
     );
   }
 
@@ -111,30 +199,45 @@ export async function handleSessionRequest(request: Request, env: SecurityEnv) {
     return noStoreJson({ error: "Credenciales inválidas." }, { status: 400 });
   }
 
-  const username = typeof body.username === "string" ? body.username : "";
+  const username = typeof body.username === "string" ? body.username.trim() : "";
   const password = typeof body.password === "string" ? body.password : "";
+  await ensureRateLimitTable(env.DB!);
+  const rateIds = await rateLimitIds(request, username, env.ROUTE_SESSION_SECRET!);
+  const retryAfterMs = await blockedFor(env.DB!, rateIds);
+  if (retryAfterMs > 0) {
+    const retryAfter = Math.max(1, Math.ceil(retryAfterMs / 1000));
+    return noStoreJson(
+      { error: "Demasiados intentos. Acceso bloqueado temporalmente.", retryAfter },
+      { status: 429, headers: { "Retry-After": String(retryAfter) } },
+    );
+  }
+
   const valid = (await constantTimeEqual(username, env.ROUTE_USERNAME!)) &&
     (await constantTimeEqual(password, env.ROUTE_PASSWORD!));
 
   if (!valid) {
-    return noStoreJson({ error: "Usuario o contraseña incorrectos." }, { status: 401 });
+    const blockMs = await recordFailure(env.DB!, rateIds);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    const retryAfter = blockMs > 0 ? Math.ceil(blockMs / 1000) : undefined;
+    return noStoreJson(
+      { error: retryAfter ? "Demasiados intentos. Acceso bloqueado temporalmente." : "Usuario o contraseña incorrectos.", retryAfter },
+      retryAfter
+        ? { status: 429, headers: { "Retry-After": String(retryAfter) } }
+        : { status: 401 },
+    );
   }
 
-  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
+  await clearFailures(env.DB!, rateIds);
   const token = await createSessionToken(env.ROUTE_SESSION_SECRET!);
   return noStoreJson(
     { ok: true },
-    {
-      headers: {
-        "Set-Cookie": `${COOKIE_NAME}=${token}; HttpOnly${secure}; SameSite=Strict; Path=/; Max-Age=${SESSION_SECONDS}`,
-      },
-    },
+    { headers: { "Set-Cookie": sessionCookie(request, token, SESSION_SECONDS) } },
   );
 }
 
 export async function requireSession(request: Request, env: SecurityEnv) {
   if (!authConfigured(env)) {
-    return noStoreJson({ error: "La seguridad no está configurada en el servidor." }, { status: 503 });
+    return noStoreJson({ error: "La seguridad o la base de datos no están configuradas en el servidor." }, { status: 503 });
   }
   if (!(await isAuthorized(request, env))) {
     return noStoreJson({ error: "Debes iniciar sesión." }, { status: 401 });
