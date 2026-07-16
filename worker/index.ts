@@ -6,6 +6,7 @@ import { handleVehicleRoadRoute } from "./vehicle-road-route";
 import { handleSessionRequest, requireSession, type SecurityEnv } from "./auth";
 import { decryptPrivateRoute } from "./private-route-data";
 import { handleTracking } from "./live-tracking";
+import { migrateLegacyOperationalData } from "./legacy-data-migration";
 
 interface Env extends SecurityEnv {
   ASSETS: Fetcher;
@@ -80,6 +81,9 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
   if (protectedApi) {
     const denied = await requireSession(request, env);
     if (denied) return denied;
+    if (env.DB && env.ROUTE_DATA_KEY) {
+      ctx.waitUntil(migrateLegacyOperationalData(env.DB, env.ROUTE_DATA_KEY));
+    }
   }
 
   if (url.pathname === "/api/private-route") {
