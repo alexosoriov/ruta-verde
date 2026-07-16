@@ -2,21 +2,46 @@
 
 ## Secretos obligatorios en Cloudflare
 
-Configura:
+### Conductor
 
-- `ROUTE_USERNAME`: usuario no predecible.
-- `ROUTE_PASSWORD`: contraseña larga, exclusiva y aleatoria.
+- `ROUTE_USERNAME`
+- `ROUTE_PASSWORD`
+
+### Jefatura
+
+- `JEFATURA_USERNAME`
+- `JEFATURA_PASSWORD`
+
+### Superadministrador
+
+- `SUPERADMIN_USERNAME`
+- `SUPERADMIN_PASSWORD`
+
+### Seguridad compartida
+
 - `ROUTE_SESSION_SECRET`: secreto aleatorio de al menos 32 bytes.
 - `ROUTE_DATA_KEY`: clave AES-256 de exactamente 32 bytes codificada en Base64.
 
 ```bash
 npx wrangler secret put ROUTE_USERNAME
 npx wrangler secret put ROUTE_PASSWORD
+npx wrangler secret put JEFATURA_USERNAME
+npx wrangler secret put JEFATURA_PASSWORD
+npx wrangler secret put SUPERADMIN_USERNAME
+npx wrangler secret put SUPERADMIN_PASSWORD
 npx wrangler secret put ROUTE_SESSION_SECRET
 npx wrangler secret put ROUTE_DATA_KEY
 ```
 
-No uses como secretos los valores de ejemplos, conversaciones o commits anteriores.
+No uses valores de ejemplos, conversaciones o commits anteriores. Cada cuenta debe tener usuario y contraseña exclusivos.
+
+## Permisos
+
+- **Conductor:** recorrido, GPS, estados, jornada y escritura del seguimiento.
+- **Jefatura:** lectura del seguimiento, métricas y mapa de supervisión.
+- **Superadministrador:** acceso completo.
+
+Los intentos fallidos se registran en D1 usando identificadores HMAC; no se guarda el usuario ni la IP en texto legible. Cinco fallos activan un bloqueo progresivo.
 
 ## Componentes protegidos
 
@@ -41,12 +66,14 @@ El comando reemplaza la bóveda usando un IV aleatorio nuevo. Después elimina d
 
 1. Sin sesión solo aparece el formulario de acceso.
 2. El usuario no viene escrito por defecto.
-3. Cinco contraseñas incorrectas producen bloqueo temporal y cabecera `Retry-After`.
-4. La contraseña correcta carga las viviendas y el mapa.
-5. Jefatura recibe el seguimiento sin que D1 guarde coordenadas o actividad legibles.
-6. IndexedDB y `localStorage` contienen sobres con `iv` y `data`, no nombres ni direcciones.
-7. Las respuestas `/api/` usan `Cache-Control: no-store`.
-8. Al cerrar sesión desaparecen del estado de la aplicación los datos descifrados.
+3. Conductor no puede leer el panel remoto de Jefatura.
+4. Jefatura no puede escribir jornadas ni ubicación del conductor.
+5. Superadministrador puede usar ambas vistas.
+6. Cinco contraseñas incorrectas producen bloqueo temporal y `Retry-After`.
+7. La contraseña correcta carga las viviendas y el mapa correspondiente al rol.
+8. D1 no contiene coordenadas, actividad, notas o casas nuevas en texto legible.
+9. IndexedDB y `localStorage` contienen sobres con `iv` y `data`, no nombres ni direcciones.
+10. Las respuestas `/api/` usan `Cache-Control: no-store`.
 
 ## Rotación
 
