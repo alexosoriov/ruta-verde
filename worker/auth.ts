@@ -8,6 +8,7 @@ export type SecurityEnv = {
   SUPERADMIN_USERNAME?: string;
   SUPERADMIN_PASSWORD?: string;
   ROUTE_SESSION_SECRET?: string;
+  DB?: D1Database;
 };
 
 type Session = {
@@ -21,24 +22,22 @@ type Account = {
   password: string;
 };
 
-type AttemptState = {
-  failures: number;
-  firstAt: number;
-  blockedUntil: number;
-};
-
-const COOKIE_NAME = "rv_session";
-const SESSION_VERSION = "v2";
+const HTTPS_COOKIE_NAME = "__Host-rv_session";
+const HTTP_COOKIE_NAME = "rv_session_dev";
+const SESSION_VERSION = "v3";
 const SESSION_SECONDS: Record<UserRole, number> = {
   driver: 12 * 60 * 60,
   manager: 8 * 60 * 60,
   superadmin: 2 * 60 * 60,
 };
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
-const LOGIN_LOCK_MS = 15 * 60 * 1000;
 const MAX_LOGIN_FAILURES = 5;
+const MAX_BLOCK_MS = 24 * 60 * 60 * 1000;
 const encoder = new TextEncoder();
-const loginAttempts = new Map<string, AttemptState>();
+
+function cookieName(request: Request) {
+  return new URL(request.url).protocol === "https:" ? HTTPS_COOKIE_NAME : HTTP_COOKIE_NAME;
+}
 
 function base64Url(bytes: Uint8Array) {
   let binary = "";
@@ -90,7 +89,29 @@ function configuredAccounts(env: SecurityEnv): Account[] {
 }
 
 export function authConfigured(env: SecurityEnv) {
-  return Boolean(env.ROUTE_SESSION_SECRET && configuredAccounts(env).length > 0);
+  return Boolean(env.ROUTE_SESSION_SECRET && env.DB && configuredAccounts(env).length > 0);
+}
+
+function noStoreJson(body: unknown, init: ResponseInit = {}) {
+  const headers = new Headers(init.headers);
+  headers.set("Cache-Control", "no-store");
+  headers.set("Content-Type", "application/json; charset=utf-8");
+  headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("Vary", "Cookie");
+  return new Response(JSON.stringify(body), { ...init, headers });
+}
+
+function requestIsSameOrigin(request: Request) {
+  const url = new URL(request.url);
+  const origin = request.headers.get("Origin");
+  if (origin && origin !== url.origin) return false;
+  const fetchSite = request.headers.get("Sec-Fetch-Site");
+  return !fetchSite || fetchSite === "same-origin" || fetchSite === "none";
+}
+
+function sessionCookie(request: Request, token: string, maxAge: number) {
+  const secure = new URL(request.url).protocol === "https:";
+  return `${cookieName(request)}=${token}; HttpOnly${secure ? "; Secure" : ""}; SameSite=Strict; Path=/; Max-Age=${maxAge}; Priority=High`;
 }
 
 async function createSessionToken(secret: string, role: UserRole) {
@@ -116,69 +137,88 @@ async function validSessionToken(token: string | null, secret: string, configure
   return await constantTimeEqual(signature, expected) ? { role, expiresAt } : null;
 }
 
-function noStoreJson(body: unknown, init: ResponseInit = {}) {
-  const headers = new Headers(init.headers);
-  headers.set("Cache-Control", "no-store");
-  headers.set("Content-Type", "application/json; charset=utf-8");
-  headers.set("X-Content-Type-Options", "nosniff");
-  headers.set("Vary", "Cookie");
-  return new Response(JSON.stringify(body), { ...init, headers });
+async function ensureRateLimitTable(db: D1Database) {
+  await db.prepare(`
+    CREATE TABLE IF NOT EXISTS auth_rate_limit (
+      id TEXT PRIMARY KEY,
+      attempts INTEGER NOT NULL,
+      window_started INTEGER NOT NULL,
+      blocked_until INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `).run();
 }
 
-function requestIsSameOrigin(request: Request) {
-  const url = new URL(request.url);
-  const origin = request.headers.get("Origin");
-  if (origin && origin !== url.origin) return false;
-  const fetchSite = request.headers.get("Sec-Fetch-Site");
-  return !fetchSite || fetchSite === "same-origin" || fetchSite === "none";
+async function rateLimitKey(scope: string, value: string, secret: string) {
+  return base64Url(await hmac(`${scope}|${value}`, secret));
 }
 
-function secureCookieSuffix(request: Request) {
-  return new URL(request.url).protocol === "https:" ? "; Secure" : "";
+function requestIp(request: Request) {
+  return request.headers.get("CF-Connecting-IP") ??
+    request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim() ??
+    "unknown";
 }
 
-async function attemptKey(request: Request, username: string, secret: string) {
-  const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
-  const agent = (request.headers.get("User-Agent") ?? "unknown").slice(0, 120);
-  const value = `${ip}|${agent}|${username.trim().toLocaleLowerCase("en-US")}`;
-  return base64Url(await hmac(value, secret));
+async function rateLimitIds(request: Request, username: string, secret: string) {
+  const normalized = username.trim().toLocaleLowerCase("en-US");
+  return Promise.all([
+    rateLimitKey("ip-user", `${requestIp(request)}|${normalized}`, secret),
+    rateLimitKey("user", normalized || "empty", secret),
+  ]);
 }
 
-function activeAttempt(key: string) {
+async function blockedFor(db: D1Database, ids: string[]) {
   const now = Date.now();
-  const state = loginAttempts.get(key);
-  if (!state) return null;
-  if (state.blockedUntil > now) return state;
-  if (now - state.firstAt > LOGIN_WINDOW_MS) {
-    loginAttempts.delete(key);
-    return null;
+  let retryAfterMs = 0;
+  for (const id of ids) {
+    const row = await db.prepare("SELECT blocked_until FROM auth_rate_limit WHERE id = ?")
+      .bind(id)
+      .first<{ blocked_until?: number }>();
+    retryAfterMs = Math.max(retryAfterMs, Math.max(0, (row?.blocked_until ?? 0) - now));
   }
-  return state;
+  return retryAfterMs;
 }
 
-function registerFailure(key: string) {
+async function recordFailure(db: D1Database, ids: string[]) {
   const now = Date.now();
-  const current = activeAttempt(key);
-  const failures = (current?.failures ?? 0) + 1;
-  const firstAt = current?.firstAt ?? now;
-  const blockedUntil = failures >= MAX_LOGIN_FAILURES ? now + LOGIN_LOCK_MS : 0;
-  loginAttempts.set(key, { failures, firstAt, blockedUntil });
-  if (loginAttempts.size > 2_000) loginAttempts.clear();
-  return blockedUntil;
+  let longestBlock = 0;
+  for (const id of ids) {
+    const row = await db.prepare("SELECT attempts, window_started FROM auth_rate_limit WHERE id = ?")
+      .bind(id)
+      .first<{ attempts?: number; window_started?: number }>();
+    const inWindow = Boolean(row?.window_started && now - row.window_started <= LOGIN_WINDOW_MS);
+    const attempts = inWindow ? (row?.attempts ?? 0) + 1 : 1;
+    const windowStarted = inWindow ? row!.window_started! : now;
+    const blockDuration = attempts >= MAX_LOGIN_FAILURES
+      ? Math.min(MAX_BLOCK_MS, LOGIN_WINDOW_MS * (2 ** Math.min(6, attempts - MAX_LOGIN_FAILURES)))
+      : 0;
+    const blockedUntil = blockDuration ? now + blockDuration : 0;
+    longestBlock = Math.max(longestBlock, blockDuration);
+    await db.prepare(`
+      INSERT INTO auth_rate_limit (id, attempts, window_started, blocked_until, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        attempts=excluded.attempts,
+        window_started=excluded.window_started,
+        blocked_until=excluded.blocked_until,
+        updated_at=excluded.updated_at
+    `).bind(id, attempts, windowStarted, blockedUntil, now).run();
+  }
+  return longestBlock;
 }
 
-function retryAfterSeconds(state: AttemptState) {
-  return Math.max(1, Math.ceil((state.blockedUntil - Date.now()) / 1000));
+async function clearFailures(db: D1Database, ids: string[]) {
+  for (const id of ids) await db.prepare("DELETE FROM auth_rate_limit WHERE id = ?").bind(id).run();
 }
 
 function slowDown() {
-  return new Promise((resolve) => setTimeout(resolve, 300));
+  return new Promise((resolve) => setTimeout(resolve, 350));
 }
 
 export async function getSession(request: Request, env: SecurityEnv): Promise<Session | null> {
   if (!authConfigured(env)) return null;
   const roles = new Set(configuredAccounts(env).map((account) => account.role));
-  return validSessionToken(cookieValue(request, COOKIE_NAME), env.ROUTE_SESSION_SECRET!, roles);
+  return validSessionToken(cookieValue(request, cookieName(request)), env.ROUTE_SESSION_SECRET!, roles);
 }
 
 export async function isAuthorized(request: Request, env: SecurityEnv) {
@@ -188,7 +228,7 @@ export async function isAuthorized(request: Request, env: SecurityEnv) {
 export async function handleSessionRequest(request: Request, env: SecurityEnv) {
   if (!authConfigured(env)) {
     return noStoreJson(
-      { error: "La seguridad no está configurada en el servidor." },
+      { error: "La seguridad, las cuentas o la base de datos no están configuradas en el servidor." },
       { status: 503 },
     );
   }
@@ -205,7 +245,7 @@ export async function handleSessionRequest(request: Request, env: SecurityEnv) {
   if (request.method === "DELETE") {
     return noStoreJson(
       { ok: true },
-      { headers: { "Set-Cookie": `${COOKIE_NAME}=; HttpOnly${secureCookieSuffix(request)}; SameSite=Strict; Path=/; Max-Age=0; Priority=High` } },
+      { headers: { "Set-Cookie": sessionCookie(request, "", 0) } },
     );
   }
 
@@ -228,13 +268,14 @@ export async function handleSessionRequest(request: Request, env: SecurityEnv) {
     return noStoreJson({ error: "Usuario o contraseña incorrectos." }, { status: 401 });
   }
 
-  const key = await attemptKey(request, username, env.ROUTE_SESSION_SECRET!);
-  const blocked = activeAttempt(key);
-  if (blocked?.blockedUntil && blocked.blockedUntil > Date.now()) {
-    const retryAfter = retryAfterSeconds(blocked);
+  await ensureRateLimitTable(env.DB!);
+  const rateIds = await rateLimitIds(request, username, env.ROUTE_SESSION_SECRET!);
+  const retryAfterMs = await blockedFor(env.DB!, rateIds);
+  if (retryAfterMs > 0) {
+    const retryAfter = Math.max(1, Math.ceil(retryAfterMs / 1000));
     await slowDown();
     return noStoreJson(
-      { error: "Demasiados intentos. Intenta nuevamente más tarde." },
+      { error: "Demasiados intentos. Acceso bloqueado temporalmente.", retryAfter },
       { status: 429, headers: { "Retry-After": String(retryAfter) } },
     );
   }
@@ -249,26 +290,22 @@ export async function handleSessionRequest(request: Request, env: SecurityEnv) {
   }
 
   if (!matchedRole) {
-    const blockedUntil = registerFailure(key);
+    const blockMs = await recordFailure(env.DB!, rateIds);
     await slowDown();
-    if (blockedUntil > Date.now()) {
-      return noStoreJson(
-        { error: "Demasiados intentos. Intenta nuevamente más tarde." },
-        { status: 429, headers: { "Retry-After": String(Math.ceil(LOGIN_LOCK_MS / 1000)) } },
-      );
-    }
-    return noStoreJson({ error: "Usuario o contraseña incorrectos." }, { status: 401 });
+    const retryAfter = blockMs > 0 ? Math.ceil(blockMs / 1000) : undefined;
+    return noStoreJson(
+      { error: retryAfter ? "Demasiados intentos. Acceso bloqueado temporalmente." : "Usuario o contraseña incorrectos.", retryAfter },
+      retryAfter
+        ? { status: 429, headers: { "Retry-After": String(retryAfter) } }
+        : { status: 401 },
+    );
   }
 
-  loginAttempts.delete(key);
+  await clearFailures(env.DB!, rateIds);
   const token = await createSessionToken(env.ROUTE_SESSION_SECRET!, matchedRole);
   return noStoreJson(
     { ok: true, role: matchedRole },
-    {
-      headers: {
-        "Set-Cookie": `${COOKIE_NAME}=${token}; HttpOnly${secureCookieSuffix(request)}; SameSite=Strict; Path=/; Max-Age=${SESSION_SECONDS[matchedRole]}; Priority=High`,
-      },
-    },
+    { headers: { "Set-Cookie": sessionCookie(request, token, SESSION_SECONDS[matchedRole]) } },
   );
 }
 
@@ -287,7 +324,7 @@ function roleCanAccess(request: Request, role: UserRole) {
 
 export async function requireSession(request: Request, env: SecurityEnv) {
   if (!authConfigured(env)) {
-    return noStoreJson({ error: "La seguridad no está configurada en el servidor." }, { status: 503 });
+    return noStoreJson({ error: "La seguridad, las cuentas o la base de datos no están configuradas en el servidor." }, { status: 503 });
   }
   const session = await getSession(request, env);
   if (!session) {
