@@ -14,6 +14,15 @@ Aplicación privada para gestionar el recorrido de recolección de reciclaje del
 - Panel de gestión y resumen de la jornada.
 - Instalación en teléfono o computador como aplicación PWA.
 - Diseño adaptable para uso en terreno.
+- Acceso separado para Conductor, Jefatura y Superadministrador.
+
+## Roles de acceso
+
+- **Conductor:** utiliza el recorrido, GPS y registro de retiros.
+- **Jefatura:** revisa seguimiento, avance, métricas y ubicación del camión.
+- **Superadministrador:** tiene acceso completo a las vistas y funciones protegidas.
+
+Las credenciales se configuran exclusivamente mediante secretos de Cloudflare. No existen usuarios ni contraseñas escritos dentro del código.
 
 ## Ejecutar localmente
 
@@ -39,9 +48,11 @@ npm test
 npm run build
 ```
 
-## Privacidad
+## Seguridad y privacidad
 
-Este repositorio debe permanecer privado porque contiene nombres y coordenadas del recorrido. No agregues claves, contraseñas ni archivos `.env` al repositorio.
+Consulta `SECURITY_SETUP.md` antes de desplegar. El recorrido privado se descifra únicamente después de autenticar una sesión válida y las API aplican permisos según el rol.
+
+Este repositorio debe permanecer privado porque el proyecto procesa nombres, direcciones y coordenadas del recorrido. No agregues claves, contraseñas, archivos `.env` ni copias de datos sin cifrar al repositorio.
 
 ## Dominio
 
