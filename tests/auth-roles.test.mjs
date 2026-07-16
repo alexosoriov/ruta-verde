@@ -15,16 +15,18 @@ test("la autenticación mantiene tres roles y secretos separados", async () => {
   assert.doesNotMatch(auth, /alex\.superadmin/u);
 });
 
-test("las sesiones usan firma, cookie protegida y comparación constante", async () => {
+test("las sesiones usan firma, cookie protegida y bloqueo persistente", async () => {
   const auth = await read("worker/auth.ts");
   assert.match(auth, /HMAC/u);
   assert.match(auth, /SHA-256/u);
   assert.match(auth, /constantTimeEqual/u);
+  assert.match(auth, /__Host-rv_session/u);
   assert.match(auth, /HttpOnly/u);
   assert.match(auth, /SameSite=Strict/u);
   assert.match(auth, /Priority=High/u);
   assert.match(auth, /MAX_LOGIN_FAILURES = 5/u);
-  assert.match(auth, /status: 429/u);
+  assert.match(auth, /auth_rate_limit/u);
+  assert.match(auth, /Retry-After/u);
 });
 
 test("las API aplican permisos distintos según el rol", async () => {
