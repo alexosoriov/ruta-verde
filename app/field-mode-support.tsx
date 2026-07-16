@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 
+const DEFAULT_MESSAGE = "Para un GPS más estable, mantén la pantalla encendida y desactiva el ahorro de batería durante el recorrido.";
+
 const FIELD_STYLE = `
   .map-toolbar strong,.next-card h2,.stop-main strong{font-size:15px!important}
   .map-toolbar small,.next-card p,.stop-main span,.map-caption,.gps-privacy,.notice{font-size:13px!important;line-height:1.45!important}
@@ -25,13 +27,24 @@ const FIELD_STYLE = `
   }
 `;
 
+function consumeMergeNotice() {
+  try {
+    const notice = sessionStorage.getItem("ruta-verde-merge-notice");
+    if (notice) sessionStorage.removeItem("ruta-verde-merge-notice");
+    return notice;
+  } catch {
+    return null;
+  }
+}
+
 export default function FieldModeSupport() {
-  const [message, setMessage] = useState("Para un GPS más estable, mantén la pantalla encendida y desactiva el ahorro de batería durante el recorrido.");
+  const [mergeNotice] = useState(consumeMergeNotice);
+  const [message, setMessage] = useState(mergeNotice ?? DEFAULT_MESSAGE);
   const [warning, setWarning] = useState(false);
   const [visible, setVisible] = useState(true);
 
   useEffect(() => {
-    const initialTimer = window.setTimeout(() => setVisible(false), 12_000);
+    const initialTimer = window.setTimeout(() => setVisible(false), mergeNotice ? 10_000 : 12_000);
     void navigator.storage?.persist?.().catch(() => false);
 
     let hiddenAt: number | null = null;
@@ -42,6 +55,11 @@ export default function FieldModeSupport() {
         return;
       }
       if (!hiddenAt || Date.now() - hiddenAt < 5_000) return;
+      navigator.geolocation?.getCurrentPosition(
+        () => {},
+        () => {},
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 12_000 },
+      );
       setMessage("La app volvió desde segundo plano. Verifica que el punto azul o el camión siga moviéndose antes de continuar.");
       setWarning(true);
       setVisible(true);
@@ -59,20 +77,7 @@ export default function FieldModeSupport() {
       if (warningTimer !== null) window.clearTimeout(warningTimer);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, []);
-
-  useEffect(() => {
-    try {
-      const mergeNotice = sessionStorage.getItem("ruta-verde-merge-notice");
-      if (!mergeNotice) return;
-      sessionStorage.removeItem("ruta-verde-merge-notice");
-      setMessage(mergeNotice);
-      setWarning(false);
-      setVisible(true);
-      const timer = window.setTimeout(() => setVisible(false), 10_000);
-      return () => window.clearTimeout(timer);
-    } catch {}
-  }, []);
+  }, [mergeNotice]);
 
   return <>
     <style>{FIELD_STYLE}</style>
