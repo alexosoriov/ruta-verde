@@ -2,27 +2,28 @@ import type { Stop } from "./route-data";
 import type { GpsMetrics } from "./tracking-types";
 import { EMPTY_GPS_METRICS } from "./tracking-types";
 import { deleteStored, readStored, writeStored } from "./journey-db";
+import type {
+  ActivityEntry,
+  JourneySnapshot,
+  StopDetail,
+  StopStatus,
+  StoredPosition,
+  SyncMetadata,
+} from "./journey-types";
+import {
+  journeyStateSignature,
+  normalizeSyncMetadata,
+  withSyncMetadata,
+} from "./journey-sync";
 
-export type StopStatus = "pending" | "done" | "absent";
-export type StopDetail = { kilos: string; material: string; note: string };
-export type ActivityEntry = { id: string; stopId: string; stopName: string; stopAddress?: string; status: "done" | "absent"; at: number };
-export type StoredPosition = { lat: number; lng: number; accuracy: number | null; at: number };
-export type JourneySnapshot = {
-  version: 4;
-  journeyId: string;
-  statuses: Record<string, StopStatus>;
-  details: Record<string, StopDetail>;
-  customStops: Stop[];
-  reverse: boolean;
-  optimizedIds: string[];
-  startedAt: number | null;
-  completedAt: number | null;
-  activity: ActivityEntry[];
-  vehicle: string;
-  lastPosition: StoredPosition | null;
-  gpsMetrics: GpsMetrics;
-  updatedAt: number;
-};
+export type {
+  ActivityEntry,
+  JourneySnapshot,
+  StopDetail,
+  StopStatus,
+  StoredPosition,
+  SyncMetadata,
+} from "./journey-types";
 
 const BACKUP_PREFIX = "ruta-verde-journey-backup:";
 const LEGACY_KEY = "santuario-viernes-v2";
@@ -63,6 +64,7 @@ function normalizeSnapshot(value: unknown): JourneySnapshot | null {
     lastPosition: candidate.lastPosition && typeof candidate.lastPosition === "object" ? candidate.lastPosition : null,
     gpsMetrics: isGpsMetrics(candidate.gpsMetrics) ? candidate.gpsMetrics : EMPTY_GPS_METRICS,
     updatedAt: candidate.updatedAt,
+    sync: normalizeSyncMetadata(candidate.sync),
   };
 }
 
@@ -113,6 +115,15 @@ async function loadRemote(journeyId: string) {
   }
 }
 
+function chooseMostRecent(local: JourneySnapshot | null, remote: JourneySnapshot | null) {
+  if (!local) return remote;
+  if (!remote) return local;
+  const localRevision = local.sync?.serverRevision ?? 0;
+  const remoteRevision = remote.sync?.serverRevision ?? 0;
+  if (remoteRevision !== localRevision) return remoteRevision > localRevision ? remote : local;
+  return remote.updatedAt > local.updatedAt ? remote : local;
+}
+
 export async function loadJourneySnapshot(journeyId: string) {
   let local: JourneySnapshot | null = null;
   try {
@@ -120,7 +131,7 @@ export async function loadJourneySnapshot(journeyId: string) {
   } catch {}
   local = local ?? readLocalBackup(journeyId);
   const remote = await loadRemote(journeyId);
-  const selected = !local ? remote : !remote ? local : remote.updatedAt > local.updatedAt ? remote : local;
+  const selected = chooseMostRecent(local, remote);
   if (selected) {
     saveJourneyEmergency(selected);
     try { await writeStored("journeys", journeyId, selected); } catch {}
@@ -128,18 +139,30 @@ export async function loadJourneySnapshot(journeyId: string) {
   return selected;
 }
 
+async function prepareSnapshot(snapshot: JourneySnapshot) {
+  let previous: JourneySnapshot | null = null;
+  try {
+    previous = normalizeSnapshot(await readStored<JourneySnapshot>("journeys", snapshot.journeyId));
+  } catch {}
+  return withSyncMetadata(snapshot, previous);
+}
+
 export async function saveJourneySnapshot(snapshot: JourneySnapshot) {
-  saveJourneyEmergency(snapshot);
-  try { await writeStored("journeys", snapshot.journeyId, snapshot); } catch {}
+  const prepared = await prepareSnapshot(snapshot);
+  saveJourneyEmergency(prepared);
+  try { await writeStored("journeys", prepared.journeyId, prepared); } catch {}
+  return prepared;
 }
 
 export async function queueJourneySnapshot(snapshot: JourneySnapshot) {
-  saveJourneyEmergency(snapshot);
+  const prepared = await prepareSnapshot(snapshot);
+  saveJourneyEmergency(prepared);
   try {
-    await writeStored("outbox", snapshot.journeyId, snapshot);
+    await writeStored("outbox", prepared.journeyId, prepared);
   } catch {
-    try { localStorage.setItem(`outbox:${snapshot.journeyId}`, JSON.stringify(snapshot)); } catch {}
+    try { localStorage.setItem(`outbox:${prepared.journeyId}`, JSON.stringify(prepared)); } catch {}
   }
+  return prepared;
 }
 
 async function readQueued(journeyId: string) {
@@ -154,6 +177,20 @@ async function readQueued(journeyId: string) {
   }
 }
 
+async function storeServerSnapshot(snapshot: JourneySnapshot) {
+  saveJourneyEmergency(snapshot);
+  try { await writeStored("journeys", snapshot.journeyId, snapshot); } catch {}
+}
+
+function reloadAfterConflict() {
+  try {
+    sessionStorage.setItem("ruta-verde-merge-notice", "Se combinaron cambios hechos desde otro dispositivo.");
+  } catch {}
+  if (document.visibilityState === "visible") {
+    window.setTimeout(() => window.location.reload(), 250);
+  }
+}
+
 export async function flushJourneyOutbox(journeyId: string) {
   if (!navigator.onLine) return false;
   const snapshot = await readQueued(journeyId);
@@ -165,6 +202,13 @@ export async function flushJourneyOutbox(journeyId: string) {
       body: JSON.stringify({ journeyId, snapshot }),
     });
     if (!response.ok) return false;
+    const data = await response.json() as { snapshot?: unknown };
+    const merged = normalizeSnapshot(data.snapshot);
+    if (merged) {
+      const conflict = journeyStateSignature(merged) !== journeyStateSignature(snapshot);
+      await storeServerSnapshot(merged);
+      if (conflict) reloadAfterConflict();
+    }
     try { await deleteStored("outbox", journeyId); } catch {}
     try { localStorage.removeItem(`outbox:${journeyId}`); } catch {}
     return true;
