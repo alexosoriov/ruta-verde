@@ -1,4 +1,4 @@
-import { encryptJson, isEncryptedEnvelope } from "./data-crypto";
+import { encryptJson } from "./data-crypto";
 
 const BATCH_SIZE = 50;
 
@@ -14,6 +14,8 @@ async function migrateJourneys(db: D1Database, keyBase64: string) {
   const rows = await db.prepare(`
     SELECT id, payload, client_updated_at, server_updated_at
     FROM journey_state
+    WHERE json_valid(payload) = 1
+      AND COALESCE(json_extract(payload, '$.v'), 0) <> 2
     ORDER BY server_updated_at ASC
     LIMIT ?
   `).bind(BATCH_SIZE).all<Record<string, unknown>>();
@@ -24,13 +26,14 @@ async function migrateJourneys(db: D1Database, keyBase64: string) {
     if (!id || !payload) continue;
     try {
       const parsed = JSON.parse(payload) as unknown;
-      if (isEncryptedEnvelope(parsed)) continue;
       if (!parsed || typeof parsed !== "object") continue;
       const encrypted = await encryptJson(parsed, keyBase64, "journey-state", id);
       await db.prepare(`
         UPDATE journey_state
         SET payload = ?, server_updated_at = ?
         WHERE id = ?
+          AND json_valid(payload) = 1
+          AND COALESCE(json_extract(payload, '$.v'), 0) <> 2
       `).bind(JSON.stringify(encrypted), Date.now(), id).run();
     } catch {
       // Un registro corrupto no debe impedir migrar los demás.
