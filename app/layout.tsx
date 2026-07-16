@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import ErrorReporter from "./error-reporter";
 import FieldModeSupport from "./field-mode-support";
 import "./globals.css";
 import "./mobile.css";
@@ -60,6 +61,7 @@ export default function RootLayout({
     <html lang="es-CL">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         {children}
+        <ErrorReporter />
         <FieldModeSupport />
       </body>
     </html>
