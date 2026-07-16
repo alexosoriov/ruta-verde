@@ -1,7 +1,7 @@
 export type SecurityEnv = {
   ROUTE_USERNAME?: string;
   ROUTE_PASSWORD?: string;
-  SESSION_SECRET?: string;
+  ROUTE_SESSION_SECRET?: string;
 };
 
 const COOKIE_NAME = "rv_session";
@@ -49,7 +49,7 @@ async function constantTimeEqual(left: string, right: string) {
 }
 
 export function authConfigured(env: SecurityEnv) {
-  return Boolean(env.ROUTE_USERNAME && env.ROUTE_PASSWORD && env.SESSION_SECRET);
+  return Boolean(env.ROUTE_USERNAME && env.ROUTE_PASSWORD && env.ROUTE_SESSION_SECRET);
 }
 
 async function createSessionToken(secret: string) {
@@ -72,7 +72,7 @@ async function validSessionToken(token: string | null, secret: string) {
 
 export async function isAuthorized(request: Request, env: SecurityEnv) {
   if (!authConfigured(env)) return false;
-  return validSessionToken(cookieValue(request, COOKIE_NAME), env.SESSION_SECRET!);
+  return validSessionToken(cookieValue(request, COOKIE_NAME), env.ROUTE_SESSION_SECRET!);
 }
 
 function noStoreJson(body: unknown, init: ResponseInit = {}) {
@@ -121,7 +121,7 @@ export async function handleSessionRequest(request: Request, env: SecurityEnv) {
   }
 
   const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
-  const token = await createSessionToken(env.SESSION_SECRET!);
+  const token = await createSessionToken(env.ROUTE_SESSION_SECRET!);
   return noStoreJson(
     { ok: true },
     {
