@@ -5,8 +5,6 @@ import handler from "vinext/server/app-router-entry";
 interface Env {
   ASSETS: Fetcher;
   DB?: D1Database;
-  ROUTE_USERNAME?: string;
-  ROUTE_PASSWORD?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -56,10 +54,6 @@ const TRACKING_COLUMNS: ColumnDefinition[] = [
 const TRACKING_STALE_AFTER_MS = 60_000;
 const JOURNEY_ID_PATTERN = /^[a-z0-9-]{1,64}$/;
 
-function isLocalRequest(url: URL) {
-  return url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname.endsWith(".local");
-}
-
 function currentJourneyId() {
   const date = new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Santiago",
@@ -72,61 +66,6 @@ function currentJourneyId() {
 
 function normalizeJourneyId(value: unknown) {
   return typeof value === "string" && JOURNEY_ID_PATTERN.test(value) ? value : currentJourneyId();
-}
-
-function constantTimeEqual(left: string, right: string) {
-  const length = Math.max(left.length, right.length);
-  let difference = left.length ^ right.length;
-  for (let index = 0; index < length; index += 1) {
-    difference |= (left.charCodeAt(index) || 0) ^ (right.charCodeAt(index) || 0);
-  }
-  return difference === 0;
-}
-
-function isAuthorized(request: Request, env: Env) {
-  if (!env.ROUTE_USERNAME || !env.ROUTE_PASSWORD) return false;
-  const authorization = request.headers.get("Authorization");
-  if (!authorization?.startsWith("Basic ")) return false;
-
-  try {
-    const decoded = atob(authorization.slice(6));
-    const separator = decoded.indexOf(":");
-    if (separator < 0) return false;
-    const username = decoded.slice(0, separator);
-    const password = decoded.slice(separator + 1);
-    return constantTimeEqual(username, env.ROUTE_USERNAME) && constantTimeEqual(password, env.ROUTE_PASSWORD);
-  } catch {
-    return false;
-  }
-}
-
-function unauthorizedResponse() {
-  return new Response("Acceso privado a Ruta Verde", {
-    status: 401,
-    headers: {
-      "WWW-Authenticate": 'Basic realm="Ruta Verde", charset="UTF-8"',
-      "Cache-Control": "no-store",
-    },
-  });
-}
-
-function missingSecurityConfigurationResponse() {
-  return new Response("Ruta Verde está bloqueada hasta configurar ROUTE_USERNAME y ROUTE_PASSWORD.", {
-    status: 503,
-    headers: { "Cache-Control": "no-store" },
-  });
-}
-
-function withSecurityHeaders(response: Response, url: URL) {
-  const headers = new Headers(response.headers);
-  headers.set("X-Content-Type-Options", "nosniff");
-  headers.set("X-Frame-Options", "DENY");
-  headers.set("Referrer-Policy", "no-referrer");
-  headers.set("Permissions-Policy", "geolocation=(self), camera=(), microphone=()");
-  headers.set("Cross-Origin-Opener-Policy", "same-origin");
-  if (url.protocol === "https:") headers.set("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
-  if (url.pathname.startsWith("/api/") || url.pathname === "/") headers.set("Cache-Control", "private, no-store");
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
 async function ensureTrackingTable(db: D1Database) {
@@ -170,8 +109,7 @@ function finiteNumber(value: unknown, fallback: number) {
 }
 
 function nonNegativeInteger(value: unknown, fallback: number) {
-  const number = finiteNumber(value, fallback);
-  return Math.max(0, Math.round(number));
+  return Math.max(0, Math.round(finiteNumber(value, fallback)));
 }
 
 async function handleTracking(request: Request, db: D1Database) {
@@ -196,17 +134,24 @@ async function handleTracking(request: Request, db: D1Database) {
 
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
 
-  const body = await request.json() as TrackingPayload;
+  let body: TrackingPayload;
+  try {
+    body = await request.json() as TrackingPayload;
+  } catch {
+    return Response.json({ error: "Datos inválidos" }, { status: 400 });
+  }
+
   if (!Number.isFinite(body.lat) || !Number.isFinite(body.lng) || Math.abs(body.lat) > 90 || Math.abs(body.lng) > 180) {
     return Response.json({ error: "Ubicación inválida" }, { status: 400 });
   }
 
   const journeyId = normalizeJourneyId(body.journeyId);
   const total = nonNegativeInteger(body.total, 41);
-  const done = Math.min(total, nonNegativeInteger(body.done, body.completed ?? 0));
-  const absent = Math.min(total - done, nonNegativeInteger(body.absent, 0));
-  const completed = Math.min(total, nonNegativeInteger(body.completed, done + absent));
-  const pending = Math.min(total, nonNegativeInteger(body.pending, Math.max(0, total - done - absent)));
+  const requestedCompleted = nonNegativeInteger(body.completed, 0);
+  const done = Math.min(total, nonNegativeInteger(body.done, requestedCompleted));
+  const absent = Math.min(Math.max(0, total - done), nonNegativeInteger(body.absent, 0));
+  const completed = Math.min(total, done + absent);
+  const pending = Math.max(0, total - completed);
   const status = body.status === "finished" || body.status === "paused" ? body.status : "active";
   const updatedAt = Date.now();
 
@@ -261,34 +206,25 @@ async function handleTracking(request: Request, db: D1Database) {
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
-    const localRequest = isLocalRequest(url);
 
-    if (!localRequest && (!env.ROUTE_USERNAME || !env.ROUTE_PASSWORD)) {
-      return withSecurityHeaders(missingSecurityConfigurationResponse(), url);
-    }
-    if (!localRequest && !isAuthorized(request, env)) {
-      return withSecurityHeaders(unauthorizedResponse(), url);
-    }
-
-    let response: Response;
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
-      response = await handleImageOptimization(request, {
+      return handleImageOptimization(request, {
         fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
         transformImage: async (body, { width, format, quality }) => {
           const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
           return result.response();
         },
       }, allowedWidths);
-    } else if (url.pathname === "/api/tracking") {
-      response = env.DB
-        ? await handleTracking(request, env.DB)
-        : Response.json({ error: "Base de datos no configurada" }, { status: 503 });
-    } else {
-      response = await handler.fetch(request, env, ctx);
     }
 
-    return withSecurityHeaders(response, url);
+    if (url.pathname === "/api/tracking") {
+      return env.DB
+        ? handleTracking(request, env.DB)
+        : Response.json({ error: "Base de datos no configurada" }, { status: 503 });
+    }
+
+    return handler.fetch(request, env, ctx);
   },
 };
 
