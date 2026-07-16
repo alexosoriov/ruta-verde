@@ -1,6 +1,28 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
-  <title id="title">Ruta Verde</title><rect width="128" height="128" rx="30" fill="#123a31"/>
-  <path d="M31 75c0-22 15-40 37-40 13 0 23 5 29 14-16-2-31 6-38 20-5 10-5 20-2 29-16-5-26-12-26-23Z" fill="#dcec75"/>
-  <path d="M49 91c9-20 22-33 43-42" fill="none" stroke="#fffdf8" stroke-width="8" stroke-linecap="round"/><circle cx="49" cy="91" r="7" fill="#fffdf8"/><circle cx="92" cy="49" r="7" fill="#fffdf8"/>
-  <path d="M69 85h25l8 10v10H64V93l5-8Z" fill="#1d8062" stroke="#fffdf8" stroke-width="4" stroke-linejoin="round"/><circle cx="73" cy="106" r="6" fill="#123a31" stroke="#fffdf8" stroke-width="3"/><circle cx="94" cy="106" r="6" fill="#123a31" stroke="#fffdf8" stroke-width="3"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title description">
+  <title id="title">Ruta Verde</title>
+  <desc id="description">Una hoja recorrida por un camino que une un punto de inicio con un destino.</desc>
+  <defs>
+    <linearGradient id="background" x1="18" y1="12" x2="112" y2="120" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F513C"/>
+      <stop offset="1" stop-color="#082E26"/>
+    </linearGradient>
+    <linearGradient id="leaf" x1="34" y1="31" x2="90" y2="96" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#DDF47A"/>
+      <stop offset="1" stop-color="#9FD64F"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="128" height="128" rx="30" fill="url(#background)"/>
+  <rect x="3" y="3" width="122" height="122" rx="27" fill="none" stroke="#FFFFFF" stroke-opacity=".1" stroke-width="2"/>
+
+  <path d="M29 78C29 51 49 30 94 27c1 38-16 66-49 69-10 1-16-7-16-18Z" fill="url(#leaf)"/>
+
+  <path d="M37 94C45 75 57 62 72 52c8-5 16-9 25-12" fill="none" stroke="#FFFDF5" stroke-width="13" stroke-linecap="round"/>
+  <path d="M37 94C45 75 57 62 72 52c8-5 16-9 25-12" fill="none" stroke="#1A6049" stroke-width="3" stroke-linecap="round" stroke-dasharray="2 9"/>
+
+  <circle cx="37" cy="94" r="8" fill="#FFFDF5"/>
+  <circle cx="37" cy="94" r="3.5" fill="#1A6049"/>
+
+  <path d="M97 22c-11 0-19 8-19 19 0 14 19 31 19 31s19-17 19-31c0-11-8-19-19-19Z" fill="#FFFDF5"/>
+  <circle cx="97" cy="41" r="7" fill="#1A6049"/>
 </svg>
