@@ -1,6 +1,7 @@
 /** Cloudflare Worker entry point for Ruta Verde. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { handleDiagnostics } from "./diagnostics";
 import { handleJourneyState } from "./journey-state";
 import { handleVehicleRoadRoute, type VehicleProfile } from "./vehicle-road-route";
 import { handleSessionRequest, requireSession, type SecurityEnv } from "./auth";
@@ -102,7 +103,8 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
   const protectedApi = url.pathname === "/api/private-route" ||
     url.pathname === "/api/tracking" ||
     url.pathname === "/api/journey-state" ||
-    url.pathname === "/api/road-route";
+    url.pathname === "/api/road-route" ||
+    url.pathname === "/api/diagnostics";
 
   if (protectedApi) {
     const denied = await requireSession(request, env);
@@ -136,6 +138,12 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
     if (!env.DB) return noStoreJson({ error: "Base de datos no configurada" }, { status: 503 });
     if (!env.ROUTE_DATA_KEY) return noStoreJson({ error: "Falta configurar ROUTE_DATA_KEY" }, { status: 503 });
     return handleJourneyState(request, env.DB, env.ROUTE_DATA_KEY);
+  }
+
+  if (url.pathname === "/api/diagnostics") {
+    if (!env.DB) return noStoreJson({ error: "Base de datos no configurada" }, { status: 503 });
+    if (!env.ROUTE_DATA_KEY) return noStoreJson({ error: "Falta configurar ROUTE_DATA_KEY" }, { status: 503 });
+    return handleDiagnostics(request, env.DB, env.ROUTE_DATA_KEY);
   }
 
   if (url.pathname === "/api/road-route") {
