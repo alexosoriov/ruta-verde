@@ -1,9 +1,10 @@
 /** Cloudflare Worker entry point for Ruta Verde. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { handleDiagnostics } from "./diagnostics";
 import { handleJourneyState } from "./journey-state";
-import { handleVehicleRoadRoute } from "./vehicle-road-route";
-import { handleSessionRequest, requireSession, type SecurityEnv } from "./auth";
+import { handleVehicleRoadRoute, type VehicleProfile } from "./vehicle-road-route";
+import { getSession, handleSessionRequest, requireSession, type SecurityEnv } from "./auth";
 import { decryptPrivateRoute } from "./private-route-data";
 import { handleTracking } from "./live-tracking";
 import { migrateLegacyOperationalData } from "./legacy-data-migration";
@@ -13,6 +14,13 @@ interface Env extends SecurityEnv {
   DB?: D1Database;
   OPENROUTESERVICE_API_KEY?: string;
   ROUTE_DATA_KEY?: string;
+  VEHICLE_TYPE?: string;
+  VEHICLE_LENGTH_METERS?: string;
+  VEHICLE_WIDTH_METERS?: string;
+  VEHICLE_HEIGHT_METERS?: string;
+  VEHICLE_AXLELOAD_TONS?: string;
+  VEHICLE_WEIGHT_TONS?: string;
+  VEHICLE_HAZMAT?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -55,6 +63,25 @@ function withSecurityHeaders(response: Response, request: Request) {
   });
 }
 
+function envNumber(value: string | undefined) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+function vehicleProfile(env: Env): VehicleProfile {
+  const allowedTypes: VehicleProfile["vehicleType"][] = ["hgv", "bus", "agricultural", "delivery", "forestry", "goods"];
+  const requestedType = env.VEHICLE_TYPE as VehicleProfile["vehicleType"] | undefined;
+  return {
+    vehicleType: requestedType && allowedTypes.includes(requestedType) ? requestedType : "delivery",
+    length: envNumber(env.VEHICLE_LENGTH_METERS),
+    width: envNumber(env.VEHICLE_WIDTH_METERS),
+    height: envNumber(env.VEHICLE_HEIGHT_METERS),
+    axleload: envNumber(env.VEHICLE_AXLELOAD_TONS),
+    weight: envNumber(env.VEHICLE_WEIGHT_TONS),
+    hazmat: env.VEHICLE_HAZMAT === "true",
+  };
+}
+
 async function handleRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
 
@@ -76,7 +103,8 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
   const protectedApi = url.pathname === "/api/private-route" ||
     url.pathname === "/api/tracking" ||
     url.pathname === "/api/journey-state" ||
-    url.pathname === "/api/road-route";
+    url.pathname === "/api/road-route" ||
+    url.pathname === "/api/diagnostics";
 
   if (protectedApi) {
     const denied = await requireSession(request, env);
@@ -112,8 +140,20 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
     return handleJourneyState(request, env.DB, env.ROUTE_DATA_KEY);
   }
 
+  if (url.pathname === "/api/diagnostics") {
+    if (!env.DB) return noStoreJson({ error: "Base de datos no configurada" }, { status: 503 });
+    if (!env.ROUTE_DATA_KEY) return noStoreJson({ error: "Falta configurar ROUTE_DATA_KEY" }, { status: 503 });
+    if (request.method === "GET" || request.method === "DELETE") {
+      const session = await getSession(request, env);
+      if (session?.role !== "manager" && session?.role !== "superadmin") {
+        return noStoreJson({ error: "Solo Jefatura o Superadministrador pueden consultar diagnósticos." }, { status: 403 });
+      }
+    }
+    return handleDiagnostics(request, env.DB, env.ROUTE_DATA_KEY);
+  }
+
   if (url.pathname === "/api/road-route") {
-    return handleVehicleRoadRoute(request, env.OPENROUTESERVICE_API_KEY);
+    return handleVehicleRoadRoute(request, env.OPENROUTESERVICE_API_KEY, vehicleProfile(env));
   }
 
   return handler.fetch(request, env, ctx);

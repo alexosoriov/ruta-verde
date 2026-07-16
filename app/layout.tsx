@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import ErrorReporter from "./error-reporter";
+import FieldModeSupport from "./field-mode-support";
 import "./globals.css";
 import "./mobile.css";
 
@@ -23,7 +25,7 @@ export const viewport: Viewport = {
 
 export const metadata: Metadata = {
   title: "Ruta Verde · Santuario",
-  description: "Control operativo del recorrido de reciclaje del viernes.",
+  description: "Control operativo seguro del recorrido de reciclaje.",
   applicationName: "Ruta Verde",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
@@ -57,10 +59,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="es-CL">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
-      >
+      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         {children}
+        <ErrorReporter />
+        <FieldModeSupport />
       </body>
     </html>
   );
