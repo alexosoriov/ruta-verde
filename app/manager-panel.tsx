@@ -5,14 +5,8 @@ import * as L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { STOPS } from "./route-data";
 import { getRoadRoute } from "./road-route";
-
-type ActivityEntry = {
-  id: string;
-  stopId: string;
-  stopName: string;
-  status: "done" | "absent";
-  at: number;
-};
+import type { GpsMetrics, TrackingActivity } from "./tracking-types";
+import { applyTruckAppearance, truckIcon } from "./truck-marker";
 
 export type LocalSummary = {
   total: number;
@@ -23,7 +17,12 @@ export type LocalSummary = {
   startedAt: number | null;
   kilos: number;
   estimatedMinutes: number;
-  activity: ActivityEntry[];
+  routeKm: number;
+  baselineRouteKm: number;
+  routeSavingsKm: number;
+  plannedDriveMinutes: number;
+  gpsMetrics: GpsMetrics;
+  activity: TrackingActivity[];
   presentationMode: boolean;
 };
 
@@ -43,24 +42,46 @@ type Tracking = {
   total: number;
   kilos?: number | null;
   route_km?: number | null;
+  baseline_route_km?: number | null;
+  route_savings_km?: number | null;
+  planned_drive_minutes?: number | null;
+  actual_km?: number | null;
+  moving_minutes?: number | null;
+  stopped_minutes?: number | null;
   estimated_minutes?: number | null;
   started_at?: number | null;
+  activity_json?: string | null;
   status: string;
   updated_at: number;
 };
 
-function sharedTruckIcon() {
-  return L.divIcon({
-    className: "truck-marker-wrap",
-    html: '<div class="shared-truck">🚛</div>',
-    iconSize: [52, 52],
-    iconAnchor: [26, 26],
-  });
+function formatMinutes(value: number) {
+  const minutes = Math.max(0, Math.round(value));
+  if (minutes < 60) return `${minutes} min`;
+  return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
 }
 
-function formatMinutes(value: number) {
-  if (value < 60) return `${value} min`;
-  return `${Math.floor(value / 60)} h ${value % 60} min`;
+function readActivity(value: string | null | undefined): TrackingActivity[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry): TrackingActivity[] => {
+      if (!entry || typeof entry !== "object") return [];
+      const item = entry as Partial<TrackingActivity>;
+      if ((item.status !== "done" && item.status !== "absent") || typeof item.at !== "number") return [];
+      return [{
+        id: typeof item.id === "string" ? item.id : `event-${item.at}`,
+        stopId: typeof item.stopId === "string" ? item.stopId : "",
+        label: typeof item.label === "string" ? item.label : "Parada registrada",
+        status: item.status,
+        at: item.at,
+        kilos: typeof item.kilos === "number" && Number.isFinite(item.kilos) ? item.kilos : 0,
+      }];
+    });
+  } catch {
+    return [];
+  }
 }
 
 export default function ManagerPanel({ localSummary }: Props) {
@@ -68,6 +89,7 @@ export default function ManagerPanel({ localSummary }: Props) {
   const mapRef = useRef<L.Map | null>(null);
   const truckRef = useRef<L.Marker | null>(null);
   const baseLayerRef = useRef<L.TileLayer | null>(null);
+  const renderedHeadingRef = useRef(0);
   const [tracking, setTracking] = useState<Tracking | null>(null);
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState(true);
@@ -127,9 +149,16 @@ export default function ManagerPanel({ localSummary }: Props) {
         setConnected(true);
         if (data.tracking && mapRef.current) {
           const point = L.latLng(data.tracking.lat, data.tracking.lng);
+          const heading = data.tracking.heading ?? renderedHeadingRef.current;
+          const moving = (data.tracking.speed ?? 0) >= 0.8;
           if (!truckRef.current) {
-            truckRef.current = L.marker(point, { icon: sharedTruckIcon(), zIndexOffset: 1000 }).addTo(mapRef.current);
-          } else truckRef.current.setLatLng(point);
+            renderedHeadingRef.current = heading;
+            truckRef.current = L.marker(point, { icon: truckIcon(heading, moving), zIndexOffset: 1000 }).addTo(mapRef.current);
+            truckRef.current.bindTooltip(moving ? "🚛 Camión en movimiento" : "🚛 Camión detenido", { direction: "top", offset: [0, -28] });
+          } else {
+            renderedHeadingRef.current = applyTruckAppearance(truckRef.current, heading, moving, renderedHeadingRef.current);
+            truckRef.current.setLatLng(point);
+          }
         }
       } catch {
         if (active) setConnected(false);
@@ -142,25 +171,30 @@ export default function ManagerPanel({ localSummary }: Props) {
     return () => { active = false; window.clearInterval(timer); };
   }, []);
 
-  const localReviewed = localSummary.done + localSummary.absent;
-  const useLocal = localReviewed > 0 || !tracking;
-  const done = useLocal ? localSummary.done : (tracking?.done ?? tracking?.completed ?? 0);
-  const absent = useLocal ? localSummary.absent : (tracking?.absent ?? 0);
-  const total = useLocal ? localSummary.total : (tracking?.total ?? localSummary.total);
-  const pending = useLocal ? localSummary.pending : (tracking?.pending ?? Math.max(0, total - done - absent));
+  const useRemote = tracking !== null;
+  const done = useRemote ? (tracking.done ?? tracking.completed ?? 0) : localSummary.done;
+  const absent = useRemote ? (tracking.absent ?? 0) : localSummary.absent;
+  const total = useRemote ? (tracking.total ?? localSummary.total) : localSummary.total;
+  const pending = useRemote ? (tracking.pending ?? Math.max(0, total - done - absent)) : localSummary.pending;
   const reviewed = done + absent;
   const progress = Math.round((reviewed / Math.max(1, total)) * 100);
-  const nextStop = useLocal ? localSummary.nextStop : (tracking?.next_stop ?? null);
-  const kilos = useLocal ? localSummary.kilos : (tracking?.kilos ?? 0);
-  const estimatedMinutes = useLocal ? localSummary.estimatedMinutes : (tracking?.estimated_minutes ?? localSummary.estimatedMinutes);
-  const startedAt = useLocal ? localSummary.startedAt : (tracking?.started_at ?? null);
+  const nextStop = useRemote ? (tracking.next_stop ?? null) : localSummary.nextStop;
+  const kilos = useRemote ? (tracking.kilos ?? 0) : localSummary.kilos;
+  const estimatedMinutes = useRemote ? (tracking.estimated_minutes ?? localSummary.estimatedMinutes) : localSummary.estimatedMinutes;
+  const startedAt = useRemote ? (tracking.started_at ?? null) : localSummary.startedAt;
   const elapsedMinutes = startedAt && clock ? Math.max(1, Math.round((clock - startedAt) / 60000)) : 0;
-  const liveConnection = localReviewed > 0 || (connected && tracking !== null);
+  const plannedKm = useRemote ? (tracking.route_km ?? localSummary.routeKm) : localSummary.routeKm;
+  const actualKm = useRemote ? (tracking.actual_km ?? 0) : localSummary.gpsMetrics.actualKm;
+  const movingMinutes = useRemote ? (tracking.moving_minutes ?? 0) : localSummary.gpsMetrics.movingMinutes;
+  const stoppedMinutes = useRemote ? (tracking.stopped_minutes ?? 0) : localSummary.gpsMetrics.stoppedMinutes;
+  const routeSavingsKm = useRemote ? (tracking.route_savings_km ?? 0) : localSummary.routeSavingsKm;
+  const activities = useRemote ? readActivity(tracking.activity_json) : localSummary.activity;
+  const liveConnection = connected && tracking !== null;
 
   return (
     <section className="manager-view">
       <div className="manager-heading">
-        <div><p className="eyebrow"><span /> Supervisión de la jornada</p><h1>Panel de jefatura</h1><p>Avance, incidencias y ubicación del camión en una sola pantalla.</p></div>
+        <div><p className="eyebrow"><span /> Supervisión de la jornada</p><h1>Panel de jefatura</h1><p>Avance, incidencias, métricas y ubicación del camión en una sola pantalla.</p></div>
         <div className={`connection-badge ${liveConnection ? "online" : "offline"}`}><i />{liveConnection ? "Jornada conectada" : "Esperando al conductor"}</div>
       </div>
 
@@ -190,17 +224,21 @@ export default function ManagerPanel({ localSummary }: Props) {
           <div className="manager-operational-metrics">
             <div><span>Tiempo transcurrido</span><strong>{startedAt ? formatMinutes(elapsedMinutes) : "Sin iniciar"}</strong></div>
             <div><span>Tiempo restante</span><strong>~{formatMinutes(estimatedMinutes)}</strong></div>
-            <div><span>Ruta planificada</span><strong>{tracking?.route_km ? `${tracking.route_km.toFixed(1)} km` : "4,5 km"}</strong></div>
+            <div><span>Ruta planificada</span><strong>{plannedKm.toFixed(1)} km</strong></div>
+            <div><span>Recorrido GPS</span><strong>{actualKm.toFixed(2)} km</strong></div>
+            <div><span>En movimiento</span><strong>{formatMinutes(movingMinutes)}</strong></div>
+            <div><span>Detenido</span><strong>{formatMinutes(stoppedMinutes)}</strong></div>
+            <div><span>Ahorro vs. base</span><strong>{routeSavingsKm > 0.01 ? `${routeSavingsKm.toFixed(2)} km` : "Por medir"}</strong></div>
           </div>
 
           <div className="manager-next"><span>Próxima parada</span><strong>{nextStop || (reviewed >= total ? "Recorrido finalizado" : "Esperando inicio")}</strong></div>
 
           <div className="manager-activity">
-            <div className="manager-activity-head"><strong>Actividad reciente</strong><span>{useLocal ? "Este dispositivo" : "En vivo"}</span></div>
-            {localSummary.activity.length ? localSummary.activity.slice(0, 4).map((entry) => (
+            <div className="manager-activity-head"><strong>Actividad reciente</strong><span>{useRemote ? "En vivo" : "Este dispositivo"}</span></div>
+            {activities.length ? activities.slice(0, 6).map((entry) => (
               <div className="activity-row" key={entry.id}>
                 <i className={entry.status} />
-                <span><strong>{entry.stopName}</strong><small>{entry.status === "done" ? "Retiro realizado" : "Marcada como ausente"}</small></span>
+                <span><strong>{entry.label}</strong><small>{entry.status === "done" ? `Retiro realizado${entry.kilos > 0 ? ` · ${entry.kilos.toLocaleString("es-CL")} kg` : ""}` : "Marcada como ausente"}</small></span>
                 <time>{new Date(entry.at).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}</time>
               </div>
             )) : <p className="manager-note">Las visitas registradas por el conductor aparecerán aquí.</p>}
@@ -211,9 +249,9 @@ export default function ManagerPanel({ localSummary }: Props) {
       </div>
 
       <div className="manager-next-stage">
-        <span>Siguiente etapa del piloto</span>
-        <strong>Medir kilómetros recorridos y tiempo ahorrado durante una jornada real.</strong>
-        <p>Con esa prueba podremos comparar el recorrido actual con Ruta Verde y demostrar el impacto con datos.</p>
+        <span>Datos del piloto</span>
+        <strong>Ruta planificada, kilómetros reales y tiempos ya se miden durante la jornada.</strong>
+        <p>Al finalizar podrás comparar el orden original con Ruta Verde usando datos del recorrido real.</p>
       </div>
     </section>
   );

@@ -16,12 +16,16 @@ export default function OfflineSupport() {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/sw.js").then(() => setReady(true)).catch(() => setReady(false));
-    }
+    if (!("serviceWorker" in navigator)) return;
+    navigator.serviceWorker.register("/sw.js")
+      .then(() => navigator.serviceWorker.ready)
+      .then(() => setReady(true))
+      .catch(() => setReady(false));
   }, []);
 
   return <div className={`network-status ${online ? "online" : "offline"}`} role="status">
-    <span />{online ? (ready ? "En línea · modo offline preparado" : "En línea") : "Sin internet · guardando cambios en el teléfono"}
+    <span />{online
+      ? (ready ? "En línea · respaldo offline preparado" : "En línea")
+      : "Sin internet · viviendas, avance y última ruta disponibles"}
   </div>;
 }
