@@ -1,8 +1,8 @@
-const CACHE = "santuario-route-v10";
+const CACHE = "santuario-route-v11";
 const CORE = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 
 async function cacheResponse(request, response) {
-  if (!response || (!response.ok && response.type !== "opaque")) return response;
+  if (!response || !response.ok) return response;
   const cache = await caches.open(CACHE);
   await cache.put(request, response.clone());
   return response;
@@ -34,36 +34,13 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-self.addEventListener("message", (event) => {
-  if (event.data?.type !== "CACHE_URLS" || !Array.isArray(event.data.urls)) return;
-  const urls = event.data.urls.filter((url) => typeof url === "string").slice(0, 220);
-  event.waitUntil(
-    caches.open(CACHE).then(async (cache) => {
-      for (const url of urls) {
-        try {
-          const request = new Request(url, { mode: "no-cors" });
-          if (!(await cache.match(request))) await cache.add(request);
-        } catch {}
-      }
-    }),
-  );
-});
-
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET") return;
   const url = new URL(request.url);
 
-  if (url.hostname.endsWith("tile.openstreetmap.org") || url.hostname === "server.arcgisonline.com") {
-    event.respondWith(cacheFirst(request));
-    return;
-  }
-
-  if (url.hostname === "router.project-osrm.org") {
-    event.respondWith(cacheFirst(request));
-    return;
-  }
-
+  // Los mapas externos conservan su política de caché normal del navegador.
+  // La app no realiza precarga ni descarga masiva de teselas.
   if (url.origin !== self.location.origin) return;
 
   if (request.mode === "navigate") {
