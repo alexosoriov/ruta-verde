@@ -80,21 +80,28 @@ function environment(database) {
   return {
     DB: database,
     ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
-    ROUTE_USERNAME: "test-user",
-    ROUTE_PASSWORD: "test-password",
+    ROUTE_USERNAME: "driver-user",
+    ROUTE_PASSWORD: "driver-password",
+    JEFATURA_USERNAME: "manager-user",
+    JEFATURA_PASSWORD: "manager-password",
     ROUTE_SESSION_SECRET: "test-session-secret-with-enough-entropy",
   };
 }
 
 const context = { waitUntil() {}, passThroughOnException() {} };
 
-async function loginCookie(worker, env) {
+async function loginCookie(worker, env, role = "driver") {
+  const credentials = role === "manager"
+    ? { username: env.JEFATURA_USERNAME, password: env.JEFATURA_PASSWORD }
+    : { username: env.ROUTE_USERNAME, password: env.ROUTE_PASSWORD };
   const response = await worker.fetch(new Request("http://localhost/api/session", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username: env.ROUTE_USERNAME, password: env.ROUTE_PASSWORD }),
+    body: JSON.stringify(credentials),
   }), env, context);
   assert.equal(response.status, 200);
+  const data = await response.json();
+  assert.equal(data.role, role);
   const setCookie = response.headers.get("set-cookie");
   assert.ok(setCookie);
   return setCookie.split(";", 1)[0];
@@ -110,7 +117,8 @@ test("tracking synchronizes remote activity and real GPS metrics", async () => {
   const worker = await loadWorker();
   const database = new FakeD1();
   const env = environment(database);
-  const cookie = await loginCookie(worker, env);
+  const driverCookie = await loginCookie(worker, env, "driver");
+  const managerCookie = await loginCookie(worker, env, "manager");
   const activity = [{
     id: "03-1000",
     stopId: "03",
@@ -120,7 +128,7 @@ test("tracking synchronizes remote activity and real GPS metrics", async () => {
     kilos: 8.5,
   }];
 
-  const post = await worker.fetch(authorizedRequest("http://localhost/api/tracking", cookie, {
+  const post = await worker.fetch(authorizedRequest("http://localhost/api/tracking", driverCookie, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -154,7 +162,7 @@ test("tracking synchronizes remote activity and real GPS metrics", async () => {
   assert.equal(post.status, 200);
 
   const get = await worker.fetch(
-    authorizedRequest("http://localhost/api/tracking?journey=santuario-2026-07-16", cookie),
+    authorizedRequest("http://localhost/api/tracking?journey=santuario-2026-07-16", managerCookie),
     env,
     context,
   );
@@ -173,8 +181,8 @@ test("tracking synchronizes remote activity and real GPS metrics", async () => {
 test("tracking rejects impossible coordinates", async () => {
   const worker = await loadWorker();
   const env = environment(new FakeD1());
-  const cookie = await loginCookie(worker, env);
-  const response = await worker.fetch(authorizedRequest("http://localhost/api/tracking", cookie, {
+  const driverCookie = await loginCookie(worker, env, "driver");
+  const response = await worker.fetch(authorizedRequest("http://localhost/api/tracking", driverCookie, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ lat: 120, lng: -70 }),
@@ -186,7 +194,7 @@ test("journey state survives a remote save and load", async () => {
   const worker = await loadWorker();
   const database = new FakeD1();
   const env = environment(database);
-  const cookie = await loginCookie(worker, env);
+  const driverCookie = await loginCookie(worker, env, "driver");
   const snapshot = {
     version: 4,
     journeyId: "santuario-2026-07-16",
@@ -204,7 +212,7 @@ test("journey state survives a remote save and load", async () => {
     updatedAt: 2_000,
   };
 
-  const post = await worker.fetch(authorizedRequest("http://localhost/api/journey-state", cookie, {
+  const post = await worker.fetch(authorizedRequest("http://localhost/api/journey-state", driverCookie, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ journeyId: snapshot.journeyId, snapshot }),
@@ -212,7 +220,7 @@ test("journey state survives a remote save and load", async () => {
   assert.equal(post.status, 200);
 
   const get = await worker.fetch(
-    authorizedRequest(`http://localhost/api/journey-state?journey=${snapshot.journeyId}`, cookie),
+    authorizedRequest(`http://localhost/api/journey-state?journey=${snapshot.journeyId}`, driverCookie),
     env,
     context,
   );
