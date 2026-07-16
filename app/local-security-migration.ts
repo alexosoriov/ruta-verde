@@ -17,6 +17,7 @@ function currentJourneyId() {
 }
 
 async function encryptIntoStorage(targetKey: string, context: string, value: unknown) {
+  if (localStorage.getItem(targetKey)) return;
   const encrypted = await sealLocalValue(value, context);
   localStorage.setItem(targetKey, JSON.stringify(encrypted));
 }
@@ -32,9 +33,9 @@ async function migratePrefixedEntries(sourcePrefix: string, targetPrefix: string
     try {
       const value = JSON.parse(raw) as unknown;
       await encryptIntoStorage(`${targetPrefix}${id}`, `${contextPrefix}:${id}`, value);
-      localStorage.removeItem(sourceKey);
     } catch {
-      // Un respaldo corrupto se elimina para no conservar datos legibles indefinidamente.
+      // Un respaldo corrupto no debe permanecer legible indefinidamente.
+    } finally {
       localStorage.removeItem(sourceKey);
     }
   }
