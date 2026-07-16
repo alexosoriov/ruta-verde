@@ -2,7 +2,7 @@
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 import { handleJourneyState } from "./journey-state";
-import { handleVehicleRoadRoute } from "./vehicle-road-route";
+import { handleVehicleRoadRoute, type VehicleProfile } from "./vehicle-road-route";
 import { handleSessionRequest, requireSession, type SecurityEnv } from "./auth";
 import { decryptPrivateRoute } from "./private-route-data";
 import { handleTracking } from "./live-tracking";
@@ -13,6 +13,13 @@ interface Env extends SecurityEnv {
   DB?: D1Database;
   OPENROUTESERVICE_API_KEY?: string;
   ROUTE_DATA_KEY?: string;
+  VEHICLE_TYPE?: string;
+  VEHICLE_LENGTH_METERS?: string;
+  VEHICLE_WIDTH_METERS?: string;
+  VEHICLE_HEIGHT_METERS?: string;
+  VEHICLE_AXLELOAD_TONS?: string;
+  VEHICLE_WEIGHT_TONS?: string;
+  VEHICLE_HAZMAT?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -53,6 +60,25 @@ function withSecurityHeaders(response: Response, request: Request) {
     statusText: response.statusText,
     headers,
   });
+}
+
+function envNumber(value: string | undefined) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+function vehicleProfile(env: Env): VehicleProfile {
+  const allowedTypes: VehicleProfile["vehicleType"][] = ["hgv", "bus", "agricultural", "delivery", "forestry", "goods"];
+  const requestedType = env.VEHICLE_TYPE as VehicleProfile["vehicleType"] | undefined;
+  return {
+    vehicleType: requestedType && allowedTypes.includes(requestedType) ? requestedType : "delivery",
+    length: envNumber(env.VEHICLE_LENGTH_METERS),
+    width: envNumber(env.VEHICLE_WIDTH_METERS),
+    height: envNumber(env.VEHICLE_HEIGHT_METERS),
+    axleload: envNumber(env.VEHICLE_AXLELOAD_TONS),
+    weight: envNumber(env.VEHICLE_WEIGHT_TONS),
+    hazmat: env.VEHICLE_HAZMAT === "true",
+  };
 }
 
 async function handleRequest(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -113,7 +139,7 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
   }
 
   if (url.pathname === "/api/road-route") {
-    return handleVehicleRoadRoute(request, env.OPENROUTESERVICE_API_KEY);
+    return handleVehicleRoadRoute(request, env.OPENROUTESERVICE_API_KEY, vehicleProfile(env));
   }
 
   return handler.fetch(request, env, ctx);
