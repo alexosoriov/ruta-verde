@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ComponentType, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type ComponentType, type FormEvent } from "react";
 import Image from "next/image";
 import { clearRouteData, installRouteData } from "./route-data";
 
@@ -13,7 +13,7 @@ export default function Home() {
   const [message, setMessage] = useState("");
   const [RouteApp, setRouteApp] = useState<ComponentType | null>(null);
 
-  const loadPrivateApp = async () => {
+  const loadPrivateApp = useCallback(async () => {
     setPhase("loading");
     setMessage("");
     const response = await fetch("/api/private-route", { cache: "no-store" });
@@ -31,7 +31,7 @@ export default function Home() {
     const module = await import("./route-app");
     setRouteApp(() => module.default);
     setPhase("ready");
-  };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -52,7 +52,7 @@ export default function Home() {
         setPhase("error");
       });
     return () => { active = false; };
-  }, []);
+  }, [loadPrivateApp]);
 
   const login = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -113,7 +113,7 @@ export default function Home() {
           <div><p style={{ color: "#a02d2d", lineHeight: 1.5 }}>{message}</p><button type="button" onClick={() => window.location.reload()} style={{ width: "100%", padding: 13, border: 0, borderRadius: 12, background: "#173e33", color: "white", fontWeight: 800 }}>Reintentar</button></div>
         ) : (
           <form onSubmit={login} style={{ display: "grid", gap: 14 }}>
-            <p style={{ margin: 0, color: "#587066", lineHeight: 1.55 }}>Los nombres, direcciones y coordenadas del recorrido están cifrados y solo se cargan después de iniciar sesión.</p>
+            <p style={{ margin: 0, color: "#587066", lineHeight: 1.55 }}>Los nombres, direcciones y coordenadas del recorrido están cifrados con AES-256-GCM y solo se cargan después de iniciar sesión.</p>
             <label style={{ display: "grid", gap: 6, color: "#173e33", fontWeight: 800 }}>Usuario<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} style={{ padding: 13, border: "1px solid #bed0c8", borderRadius: 12, font: "inherit" }} /></label>
             <label style={{ display: "grid", gap: 6, color: "#173e33", fontWeight: 800 }}>Contraseña<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} style={{ padding: 13, border: "1px solid #bed0c8", borderRadius: 12, font: "inherit" }} /></label>
             {message && <p role="alert" style={{ margin: 0, color: "#a02d2d", fontWeight: 700 }}>{message}</p>}
