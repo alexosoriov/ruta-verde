@@ -125,8 +125,12 @@ function environment(database) {
   return {
     DB: database,
     ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
-    ROUTE_USERNAME: "test-user",
-    ROUTE_PASSWORD: "test-password",
+    ROUTE_USERNAME: "driver-user",
+    ROUTE_PASSWORD: "driver-password",
+    JEFATURA_USERNAME: "manager-user",
+    JEFATURA_PASSWORD: "manager-password",
+    SUPERADMIN_USERNAME: "admin-user",
+    SUPERADMIN_PASSWORD: "admin-password",
     ROUTE_SESSION_SECRET: "test-session-secret-with-enough-entropy",
     ROUTE_DATA_KEY: Buffer.alloc(32, 7).toString("base64"),
   };
@@ -134,11 +138,11 @@ function environment(database) {
 
 const context = { waitUntil() {}, passThroughOnException() {} };
 
-async function loginCookie(worker, env) {
+async function loginCookie(worker, env, username = env.ROUTE_USERNAME, password = env.ROUTE_PASSWORD) {
   const response = await worker.fetch(new Request("http://localhost/api/session", {
     method: "POST",
     headers: { "Content-Type": "application/json", "CF-Connecting-IP": "127.0.0.1" },
-    body: JSON.stringify({ username: env.ROUTE_USERNAME, password: env.ROUTE_PASSWORD }),
+    body: JSON.stringify({ username, password }),
   }), env, context);
   assert.equal(response.status, 200);
   const setCookie = response.headers.get("set-cookie");
@@ -156,10 +160,11 @@ test("tracking is encrypted at rest and decrypts for an authenticated manager", 
   const worker = await loadWorker();
   const database = new FakeD1();
   const env = environment(database);
-  const cookie = await loginCookie(worker, env);
+  const driverCookie = await loginCookie(worker, env);
+  const managerCookie = await loginCookie(worker, env, env.JEFATURA_USERNAME, env.JEFATURA_PASSWORD);
   const activity = [{ id: "03-1000", stopId: "03", label: "Parada privada", status: "done", at: 1_000, kilos: 8.5 }];
 
-  const post = await worker.fetch(authorizedRequest("http://localhost/api/tracking", cookie, {
+  const post = await worker.fetch(authorizedRequest("http://localhost/api/tracking", driverCookie, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -198,8 +203,15 @@ test("tracking is encrypted at rest and decrypts for an authenticated manager", 
   assert.match(stored.secure_payload, /"v":2/);
   assert.doesNotMatch(JSON.stringify(stored), /Parada privada|Dirección privada|-33\.45|-70\.66/);
 
+  const driverRead = await worker.fetch(
+    authorizedRequest("http://localhost/api/tracking?journey=santuario-2026-07-16", driverCookie),
+    env,
+    context,
+  );
+  assert.equal(driverRead.status, 403);
+
   const get = await worker.fetch(
-    authorizedRequest("http://localhost/api/tracking?journey=santuario-2026-07-16", cookie),
+    authorizedRequest("http://localhost/api/tracking?journey=santuario-2026-07-16", managerCookie),
     env,
     context,
   );
@@ -211,13 +223,20 @@ test("tracking is encrypted at rest and decrypts for an authenticated manager", 
   assert.equal(data.tracking.lat, -33.45);
   assert.equal(data.tracking.actual_km, 1.35);
   assert.deepEqual(JSON.parse(data.tracking.activity_json), activity);
+
+  const managerWrite = await worker.fetch(authorizedRequest("http://localhost/api/tracking", managerCookie, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lat: -33.4, lng: -70.6 }),
+  }), env, context);
+  assert.equal(managerWrite.status, 403);
 });
 
 test("tracking rejects impossible coordinates", async () => {
   const worker = await loadWorker();
   const env = environment(new FakeD1());
-  const cookie = await loginCookie(worker, env);
-  const response = await worker.fetch(authorizedRequest("http://localhost/api/tracking", cookie, {
+  const driverCookie = await loginCookie(worker, env);
+  const response = await worker.fetch(authorizedRequest("http://localhost/api/tracking", driverCookie, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ lat: 120, lng: -70 }),
@@ -229,7 +248,7 @@ test("journey snapshots are encrypted in D1 and recover correctly", async () => 
   const worker = await loadWorker();
   const database = new FakeD1();
   const env = environment(database);
-  const cookie = await loginCookie(worker, env);
+  const driverCookie = await loginCookie(worker, env);
   const snapshot = {
     version: 4,
     journeyId: "santuario-2026-07-16",
@@ -247,7 +266,7 @@ test("journey snapshots are encrypted in D1 and recover correctly", async () => 
     updatedAt: 2_000,
   };
 
-  const post = await worker.fetch(authorizedRequest("http://localhost/api/journey-state", cookie, {
+  const post = await worker.fetch(authorizedRequest("http://localhost/api/journey-state", driverCookie, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ journeyId: snapshot.journeyId, snapshot }),
@@ -259,7 +278,7 @@ test("journey snapshots are encrypted in D1 and recover correctly", async () => 
   assert.doesNotMatch(stored.payload, /Nota privada|Persona privada|Dirección privada|-33\.4|-70\.6/);
 
   const get = await worker.fetch(
-    authorizedRequest(`http://localhost/api/journey-state?journey=${snapshot.journeyId}`, cookie),
+    authorizedRequest(`http://localhost/api/journey-state?journey=${snapshot.journeyId}`, driverCookie),
     env,
     context,
   );
@@ -278,7 +297,7 @@ test("login blocks repeated invalid attempts", async () => {
     response = await worker.fetch(new Request("http://localhost/api/session", {
       method: "POST",
       headers: { "Content-Type": "application/json", "CF-Connecting-IP": "192.0.2.10" },
-      body: JSON.stringify({ username: "test-user", password: "incorrecta" }),
+      body: JSON.stringify({ username: env.ROUTE_USERNAME, password: "incorrecta" }),
     }), env, context);
   }
   assert.equal(response.status, 429);
