@@ -4,7 +4,7 @@ import handler from "vinext/server/app-router-entry";
 import { handleDiagnostics } from "./diagnostics";
 import { handleJourneyState } from "./journey-state";
 import { handleVehicleRoadRoute, type VehicleProfile } from "./vehicle-road-route";
-import { handleSessionRequest, requireSession, type SecurityEnv } from "./auth";
+import { getSession, handleSessionRequest, requireSession, type SecurityEnv } from "./auth";
 import { decryptPrivateRoute } from "./private-route-data";
 import { handleTracking } from "./live-tracking";
 import { migrateLegacyOperationalData } from "./legacy-data-migration";
@@ -143,6 +143,12 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
   if (url.pathname === "/api/diagnostics") {
     if (!env.DB) return noStoreJson({ error: "Base de datos no configurada" }, { status: 503 });
     if (!env.ROUTE_DATA_KEY) return noStoreJson({ error: "Falta configurar ROUTE_DATA_KEY" }, { status: 503 });
+    if (request.method === "GET" || request.method === "DELETE") {
+      const session = await getSession(request, env);
+      if (session?.role !== "manager" && session?.role !== "superadmin") {
+        return noStoreJson({ error: "Solo Jefatura o Superadministrador pueden consultar diagnósticos." }, { status: 403 });
+      }
+    }
     return handleDiagnostics(request, env.DB, env.ROUTE_DATA_KEY);
   }
 
