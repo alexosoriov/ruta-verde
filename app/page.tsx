@@ -28,8 +28,8 @@ export default function Home() {
     }
     const body = await response.json() as { stops?: unknown };
     installRouteData(body.stops);
-    const module = await import("./route-app");
-    setRouteApp(() => module.default);
+    const routeAppModule = await import("./route-app");
+    setRouteApp(() => routeAppModule.default);
     setPhase("ready");
   }, []);
 
