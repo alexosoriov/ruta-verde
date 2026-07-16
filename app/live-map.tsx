@@ -5,6 +5,7 @@ import * as L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { Stop } from "./route-data";
 import { getRoadRoute } from "./road-route";
+import { applyTruckAppearance, bearingBetween, normalizeHeading, truckIcon } from "./truck-marker";
 
 type Props = {
   stops: Stop[];
@@ -12,7 +13,16 @@ type Props = {
   activeId?: string;
   activeStop?: Stop;
   completed: number;
+  done: number;
+  absent: number;
+  pending: number;
   total: number;
+  kilos: number;
+  routeKm: number;
+  estimatedMinutes: number;
+  startedAt: number | null;
+  privacyMode: boolean;
+  onTrackingChange: (active: boolean) => void;
   onArrival: (stop: Stop, distanceMeters: number) => void;
 };
 
@@ -20,33 +30,21 @@ type PositionInfo = {
   accuracy: number;
   speed: number | null;
   heading: number;
+  moving: boolean;
 };
-
-function bearing(from: L.LatLng, to: L.LatLng) {
-  const a1 = (from.lat * Math.PI) / 180;
-  const a2 = (to.lat * Math.PI) / 180;
-  const dLng = ((to.lng - from.lng) * Math.PI) / 180;
-  const y = Math.sin(dLng) * Math.cos(a2);
-  const x = Math.cos(a1) * Math.sin(a2) - Math.sin(a1) * Math.cos(a2) * Math.cos(dLng);
-  return (Math.atan2(y, x) * 180) / Math.PI + 360;
-}
-
-function truckIcon(heading: number) {
-  return L.divIcon({
-    className: "truck-marker-wrap",
-    html: `<div class="truck-heading" style="transform:rotate(${heading % 360}deg)"><span class="truck-arrow">▲</span><span class="truck-emoji">🚛</span></div>`,
-    iconSize: [54, 62],
-    iconAnchor: [27, 35],
-  });
-}
 
 function metersBetween(a: L.LatLng, stop: Stop) {
   return a.distanceTo(L.latLng(stop.lat, stop.lng));
 }
 
+function protectedStopLabel(stop: Stop) {
+  return stop.address ?? `Punto GPS ${stop.id}`;
+}
+
 const OUTBOX_KEY = "santuario-tracking-outbox";
 const MAX_GPS_ACCURACY_METERS = 80;
 const MIN_TRAIL_STEP_METERS = 2.5;
+const MOVING_SPEED_METERS_PER_SECOND = 0.8;
 
 function smoothGpsPoint(previous: L.LatLng | null, raw: L.LatLng, accuracy: number) {
   if (!previous) return raw;
@@ -60,7 +58,24 @@ function smoothGpsPoint(previous: L.LatLng | null, raw: L.LatLng, accuracy: numb
   );
 }
 
-export default function LiveMap({ stops, statuses, activeId, activeStop, completed, total, onArrival }: Props) {
+export default function LiveMap({
+  stops,
+  statuses,
+  activeId,
+  activeStop,
+  completed,
+  done,
+  absent,
+  pending,
+  total,
+  kilos,
+  routeKm,
+  estimatedMinutes,
+  startedAt,
+  privacyMode,
+  onTrackingChange,
+  onArrival,
+}: Props) {
   const mapElement = useRef<HTMLDivElement>(null);
   const initialStops = useRef(stops);
   const mapRef = useRef<L.Map | null>(null);
@@ -70,11 +85,15 @@ export default function LiveMap({ stops, statuses, activeId, activeStop, complet
   const accuracyRef = useRef<L.Circle | null>(null);
   const trailRef = useRef<L.Polyline | null>(null);
   const watchRef = useRef<number | null>(null);
-  const previousRef = useRef<L.LatLng | null>(null);
   const acceptedPointRef = useRef<L.LatLng | null>(null);
+  const lastFixAtRef = useRef<number | null>(null);
+  const headingRef = useRef(0);
+  const renderedHeadingRef = useRef(0);
+  const animationRef = useRef<number | null>(null);
   const followRef = useRef(true);
   const arrivalRef = useRef<string | null>(null);
   const lastSyncRef = useRef(0);
+  const liveStateRef = useRef({ activeStop, completed, done, absent, pending, total, kilos, routeKm, estimatedMinutes, startedAt, privacyMode });
   const [tracking, setTracking] = useState(false);
   const [follow, setFollow] = useState(true);
   const [gpsMessage, setGpsMessage] = useState("GPS detenido");
@@ -83,6 +102,9 @@ export default function LiveMap({ stops, statuses, activeId, activeStop, complet
 
   useEffect(() => { followRef.current = follow; }, [follow]);
   useEffect(() => { arrivalRef.current = null; }, [activeId]);
+  useEffect(() => {
+    liveStateRef.current = { activeStop, completed, done, absent, pending, total, kilos, routeKm, estimatedMinutes, startedAt, privacyMode };
+  }, [activeStop, completed, done, absent, pending, total, kilos, routeKm, estimatedMinutes, startedAt, privacyMode]);
 
   useEffect(() => {
     const flush = async () => {
@@ -116,10 +138,45 @@ export default function LiveMap({ stops, statuses, activeId, activeStop, complet
 
     return () => {
       if (watchRef.current !== null) navigator.geolocation.clearWatch(watchRef.current);
+      if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
       map.remove();
       mapRef.current = null;
     };
   }, []);
+
+  const updateTruckAppearance = (heading: number, moving: boolean) => {
+    const marker = truckRef.current;
+    if (!marker) return;
+    renderedHeadingRef.current = applyTruckAppearance(marker, heading, moving, renderedHeadingRef.current);
+  };
+
+  const animateTruckTo = (target: L.LatLng, accuracy: number) => {
+    const marker = truckRef.current;
+    if (!marker) return;
+    if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
+    const start = marker.getLatLng();
+    const distance = start.distanceTo(target);
+    if (distance < 0.5) {
+      marker.setLatLng(target);
+      accuracyRef.current?.setLatLng(target).setRadius(accuracy);
+      return;
+    }
+    const duration = Math.min(1200, Math.max(420, distance * 55));
+    const startedAt = performance.now();
+    const step = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / duration);
+      const eased = 1 - (1 - progress) ** 3;
+      const current = L.latLng(
+        start.lat + (target.lat - start.lat) * eased,
+        start.lng + (target.lng - start.lng) * eased,
+      );
+      marker.setLatLng(current);
+      accuracyRef.current?.setLatLng(current).setRadius(accuracy);
+      if (progress < 1) animationRef.current = requestAnimationFrame(step);
+      else animationRef.current = null;
+    };
+    animationRef.current = requestAnimationFrame(step);
+  };
 
   const changeMapStyle = (style: "streets" | "satellite") => {
     const map = mapRef.current;
@@ -162,17 +219,23 @@ export default function LiveMap({ stops, statuses, activeId, activeStop, complet
       }).addTo(layer);
       const label = document.createElement("span");
       label.className = "map-stop-label";
-      label.textContent = `${index + 1}. ${stop.name}`;
+      label.textContent = `${index + 1}. ${privacyMode ? protectedStopLabel(stop) : stop.name}`;
       marker.bindTooltip(label, { direction: "top", offset: [0, -12] });
       marker.on("click", () => map.flyTo([stop.lat, stop.lng], Math.max(map.getZoom(), 17)));
     });
     return () => controller.abort();
-  }, [stops, statuses, activeId]);
+  }, [stops, statuses, activeId, privacyMode]);
 
   const stopTracking = () => {
     if (watchRef.current !== null) navigator.geolocation.clearWatch(watchRef.current);
+    if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
+    animationRef.current = null;
     watchRef.current = null;
+    acceptedPointRef.current = null;
+    lastFixAtRef.current = null;
+    updateTruckAppearance(headingRef.current, false);
     setTracking(false);
+    onTrackingChange(false);
     setGpsMessage("GPS detenido");
   };
 
@@ -184,7 +247,7 @@ export default function LiveMap({ stops, statuses, activeId, activeStop, complet
     }
     setGpsMessage("Solicitando ubicación…");
     const id = navigator.geolocation.watchPosition(
-      ({ coords }) => {
+      ({ coords, timestamp }) => {
         const map = mapRef.current;
         if (!map) return;
         if (coords.accuracy > MAX_GPS_ACCURACY_METERS) {
@@ -197,44 +260,67 @@ export default function LiveMap({ stops, statuses, activeId, activeStop, complet
           setGpsMessage("Corrigiendo un salto impreciso del GPS…");
           return;
         }
-        const movedMeters = acceptedPointRef.current?.distanceTo(point) ?? Infinity;
-        const calculatedHeading = coords.heading ?? (previousRef.current ? bearing(previousRef.current, point) : 0);
-        if (movedMeters >= MIN_TRAIL_STEP_METERS) previousRef.current = point;
+        const previousPoint = acceptedPointRef.current;
+        const movedMeters = previousPoint?.distanceTo(point) ?? 0;
+        const elapsedSeconds = lastFixAtRef.current === null ? null : Math.max((timestamp - lastFixAtRef.current) / 1000, 0.1);
+        const derivedSpeed = elapsedSeconds === null ? null : movedMeters / elapsedSeconds;
+        const gpsSpeed = coords.speed !== null && Number.isFinite(coords.speed) ? coords.speed : null;
+        const currentSpeed = gpsSpeed ?? derivedSpeed;
+        const moving = currentSpeed !== null
+          ? currentSpeed >= MOVING_SPEED_METERS_PER_SECOND
+          : movedMeters >= MIN_TRAIL_STEP_METERS;
+        const gpsHeading = coords.heading !== null && Number.isFinite(coords.heading) ? coords.heading : null;
+        const calculatedHeading = gpsHeading ?? (previousPoint && movedMeters >= MIN_TRAIL_STEP_METERS
+          ? bearingBetween(previousPoint, point)
+          : headingRef.current);
+        headingRef.current = normalizeHeading(calculatedHeading);
+        lastFixAtRef.current = timestamp;
         acceptedPointRef.current = point;
 
         if (!truckRef.current) {
-          truckRef.current = L.marker(point, { icon: truckIcon(calculatedHeading), zIndexOffset: 1000 }).addTo(map);
-          truckRef.current.bindTooltip("Camión en movimiento", { permanent: false, direction: "top" });
+          renderedHeadingRef.current = headingRef.current;
+          truckRef.current = L.marker(point, { icon: truckIcon(renderedHeadingRef.current, moving), zIndexOffset: 1000 }).addTo(map);
+          truckRef.current.bindTooltip(moving ? "Camión en movimiento" : "Camión detenido", { permanent: false, direction: "top", offset: [0, -28] });
           accuracyRef.current = L.circle(point, { radius: coords.accuracy, color: "#2486ff", fillColor: "#2486ff", fillOpacity: 0.08, weight: 1 }).addTo(map);
         } else {
-          truckRef.current.setLatLng(point).setIcon(truckIcon(calculatedHeading));
-          accuracyRef.current?.setLatLng(point).setRadius(coords.accuracy);
+          updateTruckAppearance(headingRef.current, moving);
+          animateTruckTo(point, coords.accuracy);
         }
         if (movedMeters >= MIN_TRAIL_STEP_METERS) trailRef.current?.addLatLng(point);
         if (followRef.current) map.setView(point, Math.max(map.getZoom(), 17), { animate: true });
-        setPositionInfo({ accuracy: coords.accuracy, speed: coords.speed, heading: calculatedHeading % 360 });
-        setGpsMessage("Camión localizado en tiempo real");
+        setPositionInfo({ accuracy: coords.accuracy, speed: currentSpeed, heading: headingRef.current, moving });
+        setGpsMessage(moving ? "Camión avanzando en tiempo real" : "Camión localizado · esperando movimiento");
         setTracking(true);
 
-        if (activeStop) {
-          const distanceMeters = metersBetween(point, activeStop);
-          if (distanceMeters <= 30 && arrivalRef.current !== activeStop.id) {
-            arrivalRef.current = activeStop.id;
+        const currentState = liveStateRef.current;
+        if (currentState.activeStop) {
+          const distanceMeters = metersBetween(point, currentState.activeStop);
+          if (distanceMeters <= 30 && arrivalRef.current !== currentState.activeStop.id) {
+            arrivalRef.current = currentState.activeStop.id;
             navigator.vibrate?.([250, 120, 250]);
             if ("speechSynthesis" in window) {
-              window.speechSynthesis.speak(new SpeechSynthesisUtterance(`Llegaste a la parada de ${activeStop.name}`));
+              window.speechSynthesis.speak(new SpeechSynthesisUtterance(`Llegaste a ${currentState.privacyMode ? `la dirección ${protectedStopLabel(currentState.activeStop)}` : `la parada de ${currentState.activeStop.name}`}`));
             }
-            onArrival(activeStop, distanceMeters);
+            onArrival(currentState.activeStop, distanceMeters);
           }
         }
 
         if (Date.now() - lastSyncRef.current >= 5000) {
           lastSyncRef.current = Date.now();
           const payload = JSON.stringify({
-            lat: point.lat, lng: point.lng, speed: coords.speed,
-            heading: calculatedHeading % 360, accuracy: coords.accuracy,
-            nextStop: activeStop?.name ?? null, completed, total,
-            status: completed >= total ? "finished" : "active",
+            lat: point.lat, lng: point.lng, speed: currentSpeed,
+            heading: headingRef.current, accuracy: coords.accuracy,
+            nextStop: currentState.activeStop ? (currentState.privacyMode ? protectedStopLabel(currentState.activeStop) : currentState.activeStop.name) : null,
+            completed: currentState.completed,
+            done: currentState.done,
+            absent: currentState.absent,
+            pending: currentState.pending,
+            total: currentState.total,
+            kilos: currentState.kilos,
+            routeKm: currentState.routeKm,
+            estimatedMinutes: currentState.estimatedMinutes,
+            startedAt: currentState.startedAt,
+            status: currentState.completed >= currentState.total ? "finished" : "active",
           });
           fetch("/api/tracking", { method: "POST", headers: { "Content-Type": "application/json" }, body: payload })
             .then((response) => { if (!response.ok) throw new Error("sync failed"); localStorage.removeItem(OUTBOX_KEY); })
@@ -242,13 +328,16 @@ export default function LiveMap({ stops, statuses, activeId, activeStop, complet
         }
       },
       (error) => {
+        updateTruckAppearance(headingRef.current, false);
         setTracking(false);
         watchRef.current = null;
+        onTrackingChange(false);
         setGpsMessage(error.code === 1 ? "Debes permitir la ubicación para ver el camión" : "No pude obtener la señal GPS");
       },
       { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 },
     );
     watchRef.current = id;
+    onTrackingChange(true);
   };
 
   const centerRoute = () => {
@@ -286,7 +375,7 @@ export default function LiveMap({ stops, statuses, activeId, activeStop, complet
       <div ref={mapElement} className="street-map" aria-label="Mapa con calles, paradas y ubicación del camión" />
       <div className="map-caption live-caption">
         <span>{mapStyle === "streets" ? "Calles reales de Chile · OpenStreetMap" : "Imágenes satelitales · Esri"} · {stops.length} paradas</span>
-        <span>{positionInfo ? `${positionInfo.speed === null ? "Velocidad sin datos" : `${Math.round(positionInfo.speed * 3.6)} km/h`} · precisión ${Math.round(positionInfo.accuracy)} m` : "Activa el GPS desde el teléfono del camión"}</span>
+        <span>{positionInfo ? `${positionInfo.moving ? "En movimiento" : "Detenido"} · ${positionInfo.speed === null ? "velocidad sin datos" : `${Math.round(positionInfo.speed * 3.6)} km/h`} · precisión ${Math.round(positionInfo.accuracy)} m` : "Activa el GPS desde el teléfono del camión"}</span>
       </div>
       <p className="gps-privacy">Con el GPS activo, la ubicación se comparte únicamente con el panel privado de jefatura. Sin señal queda en espera y se sincroniza al volver internet.</p>
     </div>

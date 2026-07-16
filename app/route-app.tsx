@@ -9,21 +9,34 @@ import AppInstall from "./app-install";
 
 const LiveMap = dynamic(() => import("./live-map"), {
   ssr: false,
-  loading: () => <div className="map-shell map-loading">Cargando calles y paradas…</div>,
+  loading: () => <div className="map-shell map-loading"><Image src="/icon-192.png" width={58} height={58} alt="" unoptimized /><span>Cargando calles y paradas…</span></div>,
 });
 const ManagerPanel = dynamic(() => import("./manager-panel"), {
   ssr: false,
   loading: () => <div className="manager-view">Cargando panel de jefatura…</div>,
 });
+const RouteSimulation = dynamic(() => import("./route-simulation"), {
+  ssr: false,
+  loading: () => <div className="simulation-loading">Preparando simulación segura…</div>,
+});
 
 type StopStatus = "pending" | "done" | "absent";
 type StopDetail = { kilos: string; material: string; note: string };
+type ActivityEntry = {
+  id: string;
+  stopId: string;
+  stopName: string;
+  status: Exclude<StopStatus, "pending">;
+  at: number;
+};
 type SavedState = {
   statuses: Record<string, StopStatus>;
   details: Record<string, StopDetail>;
   customStops: Stop[];
   reverse: boolean;
   optimizedIds?: string[];
+  startedAt?: number | null;
+  activity?: ActivityEntry[];
 };
 
 const STORAGE_KEY = "santuario-viernes-v2";
@@ -68,6 +81,12 @@ export default function RouteApp() {
   const [optimizedIds, setOptimizedIds] = useState<string[]>([]);
   const [optimizing, setOptimizing] = useState(false);
   const [arrival, setArrival] = useState<{ stop: Stop; distance: number } | null>(null);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [activity, setActivity] = useState<ActivityEntry[]>([]);
+  const [presentationMode, setPresentationMode] = useState(false);
+  const [simulationOpen, setSimulationOpen] = useState(false);
+  const [driverTab, setDriverTab] = useState<"route" | "map">("route");
+  const [clock, setClock] = useState(() => Date.now());
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -79,6 +98,8 @@ export default function RouteApp() {
           setCustomStops(saved.customStops || []);
           setReverse(Boolean(saved.reverse));
           setOptimizedIds(saved.optimizedIds || []);
+          setStartedAt(saved.startedAt || null);
+          setActivity(saved.activity || []);
         }
       } catch {}
       setHydrated(true);
@@ -88,8 +109,13 @@ export default function RouteApp() {
 
   useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ statuses, details, customStops, reverse, optimizedIds }));
-  }, [statuses, details, customStops, reverse, optimizedIds, hydrated]);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ statuses, details, customStops, reverse, optimizedIds, startedAt, activity }));
+  }, [statuses, details, customStops, reverse, optimizedIds, startedAt, activity, hydrated]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 30000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const allStops = useMemo(() => {
     const result = [...STOPS];
@@ -122,6 +148,11 @@ export default function RouteApp() {
       : ROUTE_DISTANCE_KM - current.km
     : 0;
   const estimatedMinutes = Math.max(0, Math.round(pending * 2 + (routeRemaining / (vehicle === "Bicicleta" ? 14 : 24)) * 60));
+  const totalKilos = Object.values(details).reduce((total, detail) => {
+    const value = Number(detail.kilos.replace(",", "."));
+    return total + (Number.isFinite(value) ? value : 0);
+  }, 0);
+  const elapsedMinutes = startedAt && clock ? Math.max(1, Math.round((clock - startedAt) / 60000)) : 0;
   const visible = ordered.filter((s) => filter === "all" || (statuses[s.id] ?? "pending") === filter);
   const segments = useMemo(() => {
     const result: Stop[][] = [];
@@ -129,8 +160,34 @@ export default function RouteApp() {
     return result;
   }, [ordered]);
 
+  const addressLabel = (stop: Stop) => stop.address ?? `Punto GPS ${stop.id}`;
+  const residentLabel = (stop: Stop) => presentationMode ? "Nombre protegido" : stop.name;
+
+  const openDriverSection = (section: "route" | "map") => {
+    setView("driver");
+    setDriverTab(section);
+    window.setTimeout(() => {
+      const target = document.getElementById(section === "map" ? "mapa" : "recorrido");
+      if (target) window.scrollTo({ top: target.getBoundingClientRect().top + window.scrollY - 12, behavior: "smooth" });
+    }, 80);
+  };
+
   const setStatus = (id: string, status: StopStatus) => {
     setStatuses((old) => ({ ...old, [id]: status }));
+    if (status === "pending") {
+      setActivity((old) => old.filter((entry) => entry.stopId !== id));
+      return;
+    }
+    if (!startedAt) setStartedAt(Date.now());
+    const stop = allStops.find((item) => item.id === id);
+    if (!stop) return;
+    setActivity((old) => [{
+      id: `${id}-${Date.now()}`,
+      stopId: id,
+      stopName: stop.name,
+      status,
+      at: Date.now(),
+    }, ...old.filter((entry) => entry.stopId !== id)].slice(0, 8));
   };
 
   const startNearMe = () => {
@@ -152,6 +209,8 @@ export default function RouteApp() {
     if (confirm("¿Borrar todo el avance y los datos del recorrido de hoy?")) {
       setStatuses({});
       setDetails({});
+      setStartedAt(null);
+      setActivity([]);
     }
   };
 
@@ -199,10 +258,10 @@ export default function RouteApp() {
   };
 
   const exportCsv = () => {
-    const rows = [["Orden", "Casa", "Estado", "Kilos", "Material", "Observaciones"]];
+    const rows = [["Orden", "Casa", "Dirección", "Estado", "Kilos", "Material", "Observaciones"]];
     ordered.forEach((stop, index) => {
       const detail = details[stop.id] || { kilos: "", material: "", note: "" };
-      rows.push([String(index + 1), stop.name, statuses[stop.id] || "pending", detail.kilos, detail.material, detail.note]);
+      rows.push([String(index + 1), stop.name, stop.address ?? "Punto GPS registrado", statuses[stop.id] || "pending", detail.kilos, detail.material, detail.note]);
     });
     const csv = rows.map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(";")).join("\n");
     const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
@@ -226,61 +285,100 @@ export default function RouteApp() {
         <div className="header-actions"><AppInstall /><div className="header-date"><span>Viernes · recorrido activo</span><strong>{allStops.length} casas</strong></div></div>
       </header>
 
-      <nav className="app-tabs" aria-label="Cambiar vista de la aplicación">
-        <button className={view === "driver" ? "active" : ""} onClick={() => setView("driver")}>Conductor</button>
-        <button className={view === "manager" ? "active" : ""} onClick={() => setView("manager")}>Jefatura · seguimiento</button>
-      </nav>
+      {view === "manager" ? <ManagerPanel localSummary={{
+        total: allStops.length,
+        done,
+        absent,
+        pending,
+        nextStop: current ? addressLabel(current) : null,
+        startedAt,
+        kilos: totalKilos,
+        estimatedMinutes,
+        activity: activity.map((entry) => ({ ...entry, stopName: addressLabel(allStops.find((stop) => stop.id === entry.stopId) ?? { id: entry.stopId, name: entry.stopName, lat: 0, lng: 0, km: 0 }) })),
+        presentationMode,
+      }} /> : <>
 
-      {view === "manager" ? <ManagerPanel /> : <>
-
-      <section className="hero">
-        <div>
-          <p className="eyebrow"><span /> Ruta de reciclaje</p>
-          <h1>Todo el recorrido,<br />sin vueltas innecesarias.</h1>
-          <p className="lead">Mira las calles reales, las 41 paradas y el camión avanzando con el GPS del teléfono. Google Maps se encarga de los giros, sentidos de calle, desvíos y tránsito.</p>
+      <section className="presentation-bar" aria-label="Ayuda para la demostración">
+        <div><strong>Modo de trabajo</strong><span>Direcciones visibles · nombres protegibles · avance guardado</span></div>
+        <div className="presentation-actions">
+          <button className="simulation-launch" onClick={() => setSimulationOpen(true)}>▶ Probar simulación</button>
+          <button className={presentationMode ? "active" : ""} onClick={() => setPresentationMode((value) => !value)}>{presentationMode ? "Mostrar nombres" : "Ocultar nombres"}</button>
         </div>
-        <div className="progress-card">
-          <div className="progress-head"><span>Avance de hoy</span><strong>{Math.round(((done + absent) / allStops.length) * 100)}%</strong></div>
+      </section>
+
+      <section className="driver-overview" id="recorrido">
+        <div className="overview-heading">
+          <p className="eyebrow"><span /> Santuario · Viernes</p>
+          <h1>Recorrido de hoy</h1>
+          <p>La próxima dirección y las acciones importantes están siempre a mano.</p>
+        </div>
+        <div className="overview-progress">
+          <div className="progress-head"><span>Avance de jornada</span><strong>{Math.round(((done + absent) / allStops.length) * 100)}%</strong></div>
           <div className="progress-track"><i style={{ width: `${((done + absent) / allStops.length) * 100}%` }} /></div>
-          <div className="progress-numbers"><strong>{done}</strong> realizadas <span>·</span> <strong>{pending}</strong> pendientes <span>·</span> <strong>{absent}</strong> ausentes</div>
+          <div className="state-legend" aria-label="Estados del recorrido">
+            <span className="done"><i />{done} retirados</span>
+            <span className="next"><i />{current ? "1 siguiente" : "Sin siguiente"}</span>
+            <span className="absent"><i />{absent} ausentes</span>
+            <span className="pending"><i />{pending} pendientes</span>
+          </div>
         </div>
       </section>
 
       <section className="workspace">
-        <div className="map-column">
-          <LiveMap stops={ordered} statuses={statuses} activeId={current?.id} activeStop={current} completed={done + absent} total={allStops.length} onArrival={(stop, distance) => setArrival({ stop, distance })} />
+        <div className="map-column" id="mapa">
+          <LiveMap
+            stops={ordered}
+            statuses={statuses}
+            activeId={current?.id}
+            activeStop={current}
+            completed={done + absent}
+            done={done}
+            absent={absent}
+            pending={pending}
+            total={allStops.length}
+            kilos={totalKilos}
+            routeKm={ROUTE_DISTANCE_KM}
+            estimatedMinutes={estimatedMinutes}
+            startedAt={startedAt}
+            privacyMode={presentationMode}
+            onTrackingChange={(active) => { if (active && !startedAt) setStartedAt(Date.now()); }}
+            onArrival={(stop, distance) => setArrival({ stop, distance })}
+          />
           <div className="stats-row">
-            <article><span>Distancia base</span><strong>4,5 km</strong><small>entre primera y última casa</small></article>
+            <article><span>Recorrido planificado</span><strong>4,5 km</strong><small>ruta base entre las 41 viviendas</small></article>
+            <article><span>Tiempo transcurrido</span><strong>{startedAt ? `${Math.floor(elapsedMinutes / 60)} h ${elapsedMinutes % 60} min` : "Sin iniciar"}</strong><small>{startedAt ? `inicio ${new Date(startedAt).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}` : "comienza al activar la jornada"}</small></article>
             <article><span>Tiempo restante</span><strong>~{Math.floor(estimatedMinutes / 60)} h {estimatedMinutes % 60} min</strong><small>incluye 2 min por retiro</small></article>
-            <article><span>Sentido</span><strong>{reverse ? "41 → 01" : "01 → 41"}</strong><small>puedes invertirlo</small></article>
           </div>
         </div>
 
-        <aside className="next-card">
+        <aside className="next-card" key={current?.id ?? "finished"}>
           <div className="next-label"><span className="live-dot" /> Siguiente retiro</div>
           {current ? (
             <>
-              <div className="next-number">{ordered.findIndex((stop) => stop.id === current.id) + 1}</div>
-              <h2>{current.name}</h2>
-              <p>Casa {current.id} · km {current.km.toFixed(2).replace(".", ",")}</p>
-              <a className="primary-action" href={mapsUrl(current, vehicle)} target="_blank" rel="noreferrer">Abrir navegación</a>
-              <button className="complete-action" onClick={() => setStatus(current.id, "done")}>Realizado · ir al siguiente</button>
-              <button className="text-action" onClick={() => setStatus(current.id, "absent")}>Marcar como ausente</button>
+              <div className="next-meta"><span>Parada {String(ordered.findIndex((stop) => stop.id === current.id) + 1).padStart(2, "0")}</span><span>{current.km.toFixed(2).replace(".", ",")} km</span></div>
+              <h2>{addressLabel(current)}</h2>
+              <p className={`next-resident ${presentationMode ? "protected" : ""}`}>{residentLabel(current)}</p>
+              <a className="primary-action" href={mapsUrl(current, vehicle)} target="_blank" rel="noreferrer"><span aria-hidden="true">↗</span> Navegar</a>
+              <button className="complete-action" onClick={() => setStatus(current.id, "done")}><span aria-hidden="true">✓</span> Retirado</button>
+              <button className="absent-action" onClick={() => setStatus(current.id, "absent")}><span aria-hidden="true">!</span> Ausente</button>
             </>
           ) : (
-            <div className="finished"><strong>Recorrido terminado</strong><p>Las 41 casas ya fueron revisadas.</p></div>
+            <div className="finished"><Image src="/icon-192.png" width={92} height={92} alt="Personaje de Ruta Verde" unoptimized /><strong>¡Recorrido terminado!</strong><p>Las {allStops.length} viviendas ya fueron revisadas. Buen trabajo.</p></div>
           )}
-          <div className="quick-settings">
-            <label>Vehículo<select value={vehicle} onChange={(e) => setVehicle(e.target.value)}><option>Camioneta</option><option>Camión</option><option>Auto</option><option>Bicicleta</option></select></label>
-            <button className="optimize-button" onClick={optimizeRoute} disabled={optimizing}>{optimizing ? "Optimizando…" : optimizedIds.length ? "Optimizar nuevamente" : "Optimizar ruta por calles"}</button>
-            <button onClick={startNearMe}>Comenzar por el extremo más cercano</button>
-            <button onClick={() => setReverse((v) => !v)}>Invertir sentido</button>
-          </div>
-          <div className="segment-box">
-            <strong>Navegar el recorrido por tramos</strong>
-            <p>Google Maps limita las paradas; por eso van separadas automáticamente.</p>
-            <div>{segments.map((segment, index) => <a key={segment[0].id} href={segmentUrl(segment, vehicle)} target="_blank" rel="noreferrer">Tramo {index + 1}</a>)}</div>
-          </div>
+          <details className="next-options">
+            <summary>Más opciones del recorrido <span>＋</span></summary>
+            <div className="quick-settings">
+              <label>Vehículo<select value={vehicle} onChange={(e) => setVehicle(e.target.value)}><option>Camioneta</option><option>Camión</option><option>Auto</option><option>Bicicleta</option></select></label>
+              <button className="optimize-button" onClick={optimizeRoute} disabled={optimizing}>{optimizing ? "Optimizando…" : optimizedIds.length ? "Optimizar nuevamente" : "Optimizar ruta por calles"}</button>
+              <button onClick={startNearMe}>Comenzar por el extremo más cercano</button>
+              <button onClick={() => setReverse((v) => !v)}>Invertir sentido</button>
+            </div>
+            <div className="segment-box">
+              <strong>Navegar el recorrido por tramos</strong>
+              <p>Google Maps limita las paradas; por eso van separadas automáticamente.</p>
+              <div>{segments.map((segment, index) => <a key={segment[0].id} href={segmentUrl(segment, vehicle)} target="_blank" rel="noreferrer">Tramo {index + 1}</a>)}</div>
+            </div>
+          </details>
           {notice && <div className="notice" role="status">{notice}</div>}
         </aside>
       </section>
@@ -298,12 +396,12 @@ export default function RouteApp() {
             const detail = details[stop.id] || { kilos: "", material: "Mixto", note: "" };
             return <article className={`stop-row ${status} ${current?.id === stop.id ? "current" : ""}`} key={stop.id}>
               <div className="stop-order">{String(index + 1).padStart(2, "0")}</div>
-              <div className="stop-main"><strong>{stop.name}</strong><span>Casa {stop.id} · {stop.km.toFixed(2).replace(".", ",")} km</span></div>
+              <div className="stop-main"><strong>{addressLabel(stop)}</strong><span>{residentLabel(stop)} · {stop.km.toFixed(2).replace(".", ",")} km</span></div>
               <div className={`status-pill ${status}`}>{status === "done" ? "Realizado" : status === "absent" ? "Ausente" : current?.id === stop.id ? "Siguiente" : "Pendiente"}</div>
               <a className="row-nav" href={mapsUrl(stop, vehicle)} target="_blank" rel="noreferrer">Navegar</a>
               <div className="row-actions">
-                <button className="data-button" aria-label={`Datos de ${stop.name}`} onClick={() => setDetailStop(detailStop === stop.id ? null : stop.id)}>i</button>
-                {status === "pending" ? <><button aria-label={`Marcar ${stop.name} como realizado`} onClick={() => setStatus(stop.id, "done")}>✓</button><button aria-label={`Marcar ${stop.name} como ausente`} onClick={() => setStatus(stop.id, "absent")}>×</button></> : <button className="undo" onClick={() => setStatus(stop.id, "pending")}>Deshacer</button>}
+                <button className="data-button" aria-label={`Datos de ${addressLabel(stop)}`} onClick={() => setDetailStop(detailStop === stop.id ? null : stop.id)}>i</button>
+                {status === "pending" ? <><button aria-label={`Marcar ${addressLabel(stop)} como realizado`} onClick={() => setStatus(stop.id, "done")}>✓</button><button aria-label={`Marcar ${addressLabel(stop)} como ausente`} onClick={() => setStatus(stop.id, "absent")}>×</button></> : <button className="undo" onClick={() => setStatus(stop.id, "pending")}>Deshacer</button>}
               </div>
               {detailStop === stop.id && <div className="stop-detail">
                 <label>Kilos retirados<input inputMode="decimal" value={detail.kilos} onChange={(e) => updateDetail(stop.id, "kilos", e.target.value)} placeholder="Ej. 8,5" /></label>
@@ -329,16 +427,23 @@ export default function RouteApp() {
       </section>
       </>}
 
+      <nav className="bottom-nav" aria-label="Navegación principal">
+        <button className={view === "driver" && driverTab === "route" ? "active" : ""} onClick={() => openDriverSection("route")}><span aria-hidden="true">↻</span><strong>Recorrido</strong></button>
+        <button className={view === "driver" && driverTab === "map" ? "active" : ""} onClick={() => openDriverSection("map")}><span aria-hidden="true">⌖</span><strong>Mapa</strong></button>
+        <button className={view === "manager" ? "active" : ""} onClick={() => setView("manager")}><span aria-hidden="true">▦</span><strong>Jefatura</strong></button>
+      </nav>
+
       {arrival && <div className="arrival-backdrop" role="dialog" aria-modal="true" aria-labelledby="arrival-title">
         <div className="arrival-card">
           <span className="arrival-icon">✓</span>
           <p>Llegada automática</p>
-          <h2 id="arrival-title">Llegaste a {arrival.stop.name}</h2>
+          <h2 id="arrival-title">Llegaste a {addressLabel(arrival.stop)}</h2>
           <span>Estás aproximadamente a {Math.round(arrival.distance)} metros del punto.</span>
           <button onClick={() => { setStatus(arrival.stop.id, "done"); setArrival(null); }}>Registrar retiro y continuar</button>
           <button className="arrival-secondary" onClick={() => setArrival(null)}>Todavía no · cerrar aviso</button>
         </div>
       </div>}
+      {simulationOpen && <RouteSimulation onClose={() => setSimulationOpen(false)} />}
     </main>
   );
 }
