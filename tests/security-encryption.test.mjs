@@ -4,10 +4,11 @@ import { readFile } from "node:fs/promises";
 
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
-test("el código público no contiene registros personales del recorrido", async () => {
+test("el código público deja vacío el conjunto de paradas hasta autenticar", async () => {
   const routeData = await read("app/route-data.ts");
-  assert.doesNotMatch(routeData, /Cinthya|Aucaman Sur|Los Pimientos 4806|Lepihue 5084/u);
+  assert.match(routeData, /export let STOPS: Stop\[\] = \[\]/u);
   assert.match(routeData, /Los registros reales se cargan después de autenticar/u);
+  assert.doesNotMatch(routeData, /name:\s*["'][^"']+["']\s*,\s*address:/u);
 });
 
 test("el bloque privado exige AES-256-GCM autenticado", async () => {
@@ -16,7 +17,8 @@ test("el bloque privado exige AES-256-GCM autenticado", async () => {
   assert.match(encrypted, /rawKey\.byteLength !== 32/u);
   assert.match(encrypted, /tagLength: 128/u);
   assert.match(encrypted, /additionalData/u);
-  assert.doesNotMatch(encrypted, /Cinthya|Aucaman Sur|Los Pimientos 4806|Lepihue 5084/u);
+  assert.match(encrypted, /PRIVATE_ROUTE_CIPHERTEXT_B64/u);
+  assert.doesNotMatch(encrypted, /\{\s*id:\s*["']\d+/u);
 });
 
 test("las APIs con ubicaciones y actividad requieren sesión", async () => {
