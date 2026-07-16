@@ -1,11 +1,19 @@
 {
+  "id": "/",
   "name": "Ruta Verde · Santuario",
   "short_name": "Ruta Verde",
-  "description": "Ruta operativa de reciclaje con GPS y modo sin conexión",
+  "description": "Ruta operativa de reciclaje con GPS, seguimiento y respaldo sin conexión",
+  "lang": "es-CL",
+  "dir": "ltr",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
   "background_color": "#f4f1e8",
   "theme_color": "#123a31",
+  "categories": ["navigation", "productivity", "utilities"],
+  "prefer_related_applications": false,
   "icons": [
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "/logo-ruta-verde.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
