@@ -85,8 +85,11 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
-      const body = await response.json().catch(() => ({})) as { error?: string; role?: unknown };
-      if (!response.ok) throw new Error(body.error || "No fue posible iniciar sesión.");
+      const body = await response.json().catch(() => ({})) as { error?: string; role?: unknown; retryAfter?: number };
+      if (!response.ok) {
+        const retry = body.retryAfter ? ` Intenta nuevamente en ${Math.ceil(body.retryAfter / 60)} min.` : "";
+        throw new Error((body.error || "No fue posible iniciar sesión.") + retry);
+      }
       const nextRole = normalizeRole(body.role);
       if (!nextRole) throw new Error("La cuenta no tiene un rol válido configurado.");
       setPassword("");
@@ -102,6 +105,7 @@ export default function Home() {
     clearRouteData();
     setProtectedApp(null);
     setRole(null);
+    setUsername("");
     setPassword("");
     setPhase("login");
   };
@@ -141,9 +145,9 @@ export default function Home() {
           <div><p style={{ color: "#a02d2d", lineHeight: 1.5 }}>{message}</p><button type="button" onClick={() => window.location.reload()} style={{ width: "100%", padding: 13, border: 0, borderRadius: 12, background: "#173e33", color: "white", fontWeight: 800 }}>Reintentar</button></div>
         ) : (
           <form onSubmit={login} style={{ display: "grid", gap: 14 }}>
-            <p style={{ margin: 0, color: "#587066", lineHeight: 1.55 }}>Conductor, Jefatura y Superadministrador ingresan con cuentas distintas. Las credenciales permanecen guardadas únicamente como secretos del servidor.</p>
-            <label style={{ display: "grid", gap: 6, color: "#173e33", fontWeight: 800 }}>Usuario<input autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={(event) => setUsername(event.target.value)} style={{ padding: 13, border: "1px solid #bed0c8", borderRadius: 12, font: "inherit" }} /></label>
-            <label style={{ display: "grid", gap: 6, color: "#173e33", fontWeight: 800 }}>Contraseña<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} style={{ padding: 13, border: "1px solid #bed0c8", borderRadius: 12, font: "inherit" }} /></label>
+            <p style={{ margin: 0, color: "#587066", lineHeight: 1.55 }}>Conductor, Jefatura y Superadministrador ingresan con cuentas distintas. Nombres, direcciones, notas y coordenadas permanecen cifrados.</p>
+            <label style={{ display: "grid", gap: 6, color: "#173e33", fontWeight: 800 }}>Usuario<input autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={(event) => setUsername(event.target.value)} required style={{ padding: 13, border: "1px solid #bed0c8", borderRadius: 12, font: "inherit" }} /></label>
+            <label style={{ display: "grid", gap: 6, color: "#173e33", fontWeight: 800 }}>Contraseña<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required style={{ padding: 13, border: "1px solid #bed0c8", borderRadius: 12, font: "inherit" }} /></label>
             {message && <p role="alert" style={{ margin: 0, color: "#a02d2d", fontWeight: 700 }}>{message}</p>}
             <button type="submit" style={{ padding: 14, border: 0, borderRadius: 12, background: "#173e33", color: "white", fontWeight: 900, fontSize: 15 }}>Entrar a Ruta Verde</button>
           </form>
