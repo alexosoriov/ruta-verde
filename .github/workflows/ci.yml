@@ -1,0 +1,29 @@
+name: Validar Ruta Verde
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.16.0
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Revisar código
+        run: npm run lint
+
+      - name: Compilar y ejecutar pruebas
+        run: npm test
