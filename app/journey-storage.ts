@@ -2,14 +2,7 @@ import type { Stop } from "./route-data";
 import type { GpsMetrics } from "./tracking-types";
 import { EMPTY_GPS_METRICS } from "./tracking-types";
 import { deleteStored, readStored, writeStored } from "./journey-db";
-import type {
-  ActivityEntry,
-  JourneySnapshot,
-  StopDetail,
-  StopStatus,
-  StoredPosition,
-  SyncMetadata,
-} from "./journey-types";
+import type { ActivityEntry, JourneySnapshot } from "./journey-types";
 import {
   journeyStateSignature,
   normalizeSyncMetadata,
