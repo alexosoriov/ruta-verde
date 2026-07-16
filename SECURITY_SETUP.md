@@ -1,27 +1,53 @@
-# Activación del acceso protegido
+# Activación de seguridad
 
-La seguridad requiere cuatro secretos en Cloudflare:
+## Secretos obligatorios en Cloudflare
 
-- `ROUTE_USERNAME`
-- `ROUTE_PASSWORD`
-- `ROUTE_SESSION_SECRET`
-- `ROUTE_DATA_KEY`
+Configura:
 
-La clave `ROUTE_DATA_KEY` debe ser exactamente una clave AES-256 de 32 bytes codificada en Base64. No la cambies sin volver a cifrar el bloque guardado en `worker/vault/sector-map.ts`.
+- `ROUTE_USERNAME`: usuario no predecible.
+- `ROUTE_PASSWORD`: contraseña larga, exclusiva y aleatoria.
+- `ROUTE_SESSION_SECRET`: secreto aleatorio de al menos 32 bytes.
+- `ROUTE_DATA_KEY`: clave AES-256 de exactamente 32 bytes codificada en Base64.
 
-## Separación de datos
+```bash
+npx wrangler secret put ROUTE_USERNAME
+npx wrangler secret put ROUTE_PASSWORD
+npx wrangler secret put ROUTE_SESSION_SECRET
+npx wrangler secret put ROUTE_DATA_KEY
+```
 
-- `app/route-data.ts` no contiene registros personales y comienza vacío.
-- `worker/private-route-data.ts` es solo un puente de compatibilidad.
-- `worker/vault/sector-map.ts` contiene únicamente el bloque AES-256-GCM cifrado.
-- el mapa continúa recibiendo las viviendas desde `/api/private-route` después de autenticar la sesión.
+No uses como secretos los valores de ejemplos, conversaciones o commits anteriores.
 
-Nunca guardes una copia JSON, CSV o TypeScript con nombres, direcciones o coordenadas sin cifrar dentro del repositorio.
+## Componentes protegidos
 
-Después de configurar los secretos, vuelve a desplegar el proyecto y comprueba:
+- `app/route-data.ts` comienza vacío y no contiene registros personales.
+- `worker/vault/sector-map.ts` contiene únicamente el recorrido cifrado.
+- `worker/journey-state.ts` cifra jornadas completas en D1.
+- `worker/live-tracking.ts` cifra ubicación, actividad y métricas remotas.
+- `app/journey-db.ts` cifra IndexedDB con una clave no extraíble del dispositivo.
+- `app/journey-storage.ts` cifra respaldos y cola offline de `localStorage`.
 
-1. una visita sin sesión solo muestra el formulario de acceso;
-2. una contraseña incorrecta devuelve acceso denegado;
-3. una contraseña correcta carga las 41 viviendas y el mapa normalmente;
-4. cerrar sesión elimina el acceso a recorrido, seguimiento y Jefatura;
-5. las respuestas de `/api/` indican `Cache-Control: no-store`.
+## Actualizar las viviendas
+
+Guarda temporalmente el JSON sin cifrar dentro de `private/`, carpeta ignorada por Git, y ejecuta:
+
+```bash
+ROUTE_DATA_KEY="TU_CLAVE_BASE64" npm run security:encrypt-route -- private/route.json
+```
+
+El comando reemplaza la bóveda usando un IV aleatorio nuevo. Después elimina de forma segura el archivo temporal.
+
+## Comprobación posterior al despliegue
+
+1. Sin sesión solo aparece el formulario de acceso.
+2. El usuario no viene escrito por defecto.
+3. Cinco contraseñas incorrectas producen bloqueo temporal y cabecera `Retry-After`.
+4. La contraseña correcta carga las viviendas y el mapa.
+5. Jefatura recibe el seguimiento sin que D1 guarde coordenadas o actividad legibles.
+6. IndexedDB y `localStorage` contienen sobres con `iv` y `data`, no nombres ni direcciones.
+7. Las respuestas `/api/` usan `Cache-Control: no-store`.
+8. Al cerrar sesión desaparecen del estado de la aplicación los datos descifrados.
+
+## Rotación
+
+Cambiar `ROUTE_SESSION_SECRET` invalida todas las sesiones existentes. Cambiar `ROUTE_DATA_KEY` requiere volver a cifrar la bóveda y eliminar o migrar los registros D1 cifrados con la clave anterior.
