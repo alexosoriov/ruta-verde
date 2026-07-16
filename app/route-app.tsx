@@ -1,11 +1,24 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import { ROUTE_DISTANCE_KM, STOPS, type Stop } from "./route-data";
 import OfflineSupport from "./offline-support";
 import AppInstall from "./app-install";
+import {
+  currentJourneyId,
+  flushJourneyOutbox,
+  loadJourneySnapshot,
+  queueJourneySnapshot,
+  saveJourneyEmergency,
+  saveJourneySnapshot,
+  type ActivityEntry,
+  type JourneySnapshot,
+  type StopDetail,
+  type StopStatus,
+  type StoredPosition,
+} from "./journey-storage";
 
 const LiveMap = dynamic(() => import("./live-map"), {
   ssr: false,
@@ -20,26 +33,11 @@ const RouteSimulation = dynamic(() => import("./route-simulation"), {
   loading: () => <div className="simulation-loading">Preparando simulación segura…</div>,
 });
 
-type StopStatus = "pending" | "done" | "absent";
-type StopDetail = { kilos: string; material: string; note: string };
-type ActivityEntry = {
-  id: string;
-  stopId: string;
-  stopName: string;
-  status: Exclude<StopStatus, "pending">;
-  at: number;
-};
-type SavedState = {
-  statuses: Record<string, StopStatus>;
-  details: Record<string, StopDetail>;
-  customStops: Stop[];
-  reverse: boolean;
-  optimizedIds?: string[];
-  startedAt?: number | null;
-  activity?: ActivityEntry[];
-};
+const JOURNEY_ID = currentJourneyId();
 
-const STORAGE_KEY = "santuario-viernes-v2";
+type SaveState = "loading" | "saved" | "queued" | "syncing" | "synced" | "error";
+type OptimizerResponse = { code: string; waypoints: Array<{ waypoint_index: number }> };
+type InputChange = { target: { value: string } };
 
 function mapsUrl(stop: Stop, vehicle: string) {
   const mode = vehicle === "Bicicleta" ? "bicycling" : "driving";
@@ -54,7 +52,7 @@ function segmentUrl(stops: Stop[], vehicle: string) {
   return `https://www.google.com/maps/dir/?api=1&origin=${origin.lat},${origin.lng}&destination=${destination.lat},${destination.lng}&travelmode=${mode}${waypoints ? `&waypoints=${encodeURIComponent(waypoints)}` : ""}`;
 }
 
-function distance(a: Stop, b: Stop) {
+function distance(a: Pick<Stop, "lat" | "lng">, b: Pick<Stop, "lat" | "lng">) {
   const r = 6371;
   const dLat = ((b.lat - a.lat) * Math.PI) / 180;
   const dLon = ((b.lng - a.lng) * Math.PI) / 180;
@@ -64,6 +62,11 @@ function distance(a: Stop, b: Stop) {
       Math.cos((b.lat * Math.PI) / 180) *
       Math.sin(dLon / 2) ** 2;
   return 2 * r * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
+function formatVisitTime(entry?: ActivityEntry) {
+  if (!entry) return "Aún sin visita";
+  return new Date(entry.at).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" });
 }
 
 export default function RouteApp() {
@@ -82,37 +85,41 @@ export default function RouteApp() {
   const [optimizing, setOptimizing] = useState(false);
   const [arrival, setArrival] = useState<{ stop: Stop; distance: number } | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [completedAt, setCompletedAt] = useState<number | null>(null);
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
   const [presentationMode, setPresentationMode] = useState(false);
   const [simulationOpen, setSimulationOpen] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
+  const [lastPosition, setLastPosition] = useState<StoredPosition | null>(null);
+  const [saveState, setSaveState] = useState<SaveState>("loading");
+  const [gpsTracking, setGpsTracking] = useState(false);
+  const lastAutoReorderAtRef = useRef(0);
+  const autoRoutingRef = useRef(false);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => {
-      try {
-        const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null") as SavedState | null;
-        if (saved) {
-          setStatuses(saved.statuses || {});
-          setDetails(saved.details || {});
-          setCustomStops(saved.customStops || []);
-          setReverse(Boolean(saved.reverse));
-          setOptimizedIds(saved.optimizedIds || []);
-          setStartedAt(saved.startedAt || null);
-          setActivity(saved.activity || []);
-        }
-      } catch {}
+    let cancelled = false;
+    void loadJourneySnapshot(JOURNEY_ID).then((saved) => {
+      if (cancelled) return;
+      if (saved) {
+        setStatuses(saved.statuses || {});
+        setDetails(saved.details || {});
+        setCustomStops(saved.customStops || []);
+        setReverse(Boolean(saved.reverse));
+        setOptimizedIds(saved.optimizedIds || []);
+        setStartedAt(saved.startedAt || null);
+        setCompletedAt(saved.completedAt || null);
+        setActivity(saved.activity || []);
+        setVehicle(saved.vehicle || "Camioneta");
+        setLastPosition(saved.lastPosition || null);
+      }
       setHydrated(true);
-    }, 0);
-    return () => window.clearTimeout(timer);
+      setSaveState(saved ? "saved" : "synced");
+    });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
-    if (!hydrated) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ statuses, details, customStops, reverse, optimizedIds, startedAt, activity }));
-  }, [statuses, details, customStops, reverse, optimizedIds, startedAt, activity, hydrated]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => setClock(Date.now()), 30000);
+    const timer = window.setInterval(() => setClock(Date.now()), 30_000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -122,13 +129,14 @@ export default function RouteApp() {
       let bestIndex = 0;
       let bestDistance = Infinity;
       result.forEach((stop, index) => {
-        const d = distance(stop, custom);
-        if (d < bestDistance) { bestDistance = d; bestIndex = index; }
+        const currentDistance = distance(stop, custom);
+        if (currentDistance < bestDistance) { bestDistance = currentDistance; bestIndex = index; }
       });
       result.splice(bestIndex + 1, 0, custom);
     }
     return result;
   }, [customStops]);
+
   const optimizedStops = useMemo(() => {
     if (!optimizedIds.length) return allStops;
     const byId = new Map(allStops.map((stop) => [stop.id, stop]));
@@ -136,11 +144,12 @@ export default function RouteApp() {
     const used = new Set(sorted.map((stop) => stop.id));
     return [...sorted, ...allStops.filter((stop) => !used.has(stop.id))];
   }, [allStops, optimizedIds]);
+
   const ordered = useMemo(() => (reverse ? [...optimizedStops].reverse() : optimizedStops), [reverse, optimizedStops]);
-  const current = ordered.find((s) => (statuses[s.id] ?? "pending") === "pending");
-  const done = Object.values(statuses).filter((s) => s === "done").length;
-  const absent = Object.values(statuses).filter((s) => s === "absent").length;
-  const pending = allStops.length - done - absent;
+  const current = ordered.find((stop) => (statuses[stop.id] ?? "pending") === "pending");
+  const done = Object.values(statuses).filter((status) => status === "done").length;
+  const absent = Object.values(statuses).filter((status) => status === "absent").length;
+  const pending = Math.max(0, allStops.length - done - absent);
   const routeRemaining = current
     ? reverse
       ? current.km
@@ -151,16 +160,68 @@ export default function RouteApp() {
     const value = Number(detail.kilos.replace(",", "."));
     return total + (Number.isFinite(value) ? value : 0);
   }, 0);
-  const elapsedMinutes = startedAt && clock ? Math.max(1, Math.round((clock - startedAt) / 60000)) : 0;
-  const visible = ordered.filter((s) => filter === "all" || (statuses[s.id] ?? "pending") === filter);
+  const elapsedMinutes = startedAt && clock ? Math.max(1, Math.round((clock - startedAt) / 60_000)) : 0;
+  const visible = ordered.filter((stop) => filter === "all" || (statuses[stop.id] ?? "pending") === filter);
   const segments = useMemo(() => {
     const result: Stop[][] = [];
-    for (let i = 0; i < ordered.length - 1; i += 9) result.push(ordered.slice(i, i + 10));
+    for (let index = 0; index < ordered.length - 1; index += 9) result.push(ordered.slice(index, index + 10));
     return result;
   }, [ordered]);
+  const activityByStop = useMemo(() => new Map(activity.map((entry) => [entry.stopId, entry])), [activity]);
 
   const addressLabel = (stop: Stop) => stop.address ?? `Punto GPS ${stop.id}`;
   const residentLabel = (stop: Stop) => presentationMode ? "Nombre protegido" : stop.name;
+
+  useEffect(() => {
+    if (!hydrated || !allStops.length) return;
+    if (pending === 0 && !completedAt) setCompletedAt(Date.now());
+    if (pending > 0 && completedAt) setCompletedAt(null);
+  }, [pending, completedAt, hydrated, allStops.length]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const snapshot: JourneySnapshot = {
+      version: 3,
+      journeyId: JOURNEY_ID,
+      statuses,
+      details,
+      customStops,
+      reverse,
+      optimizedIds,
+      startedAt,
+      completedAt,
+      activity,
+      vehicle,
+      lastPosition,
+      updatedAt: Date.now(),
+    };
+
+    saveJourneyEmergency(snapshot);
+    setSaveState(navigator.onLine ? "saved" : "queued");
+    const timer = window.setTimeout(async () => {
+      await saveJourneySnapshot(snapshot);
+      await queueJourneySnapshot(snapshot);
+      if (!navigator.onLine) {
+        setSaveState("queued");
+        return;
+      }
+      setSaveState("syncing");
+      const synced = await flushJourneyOutbox(JOURNEY_ID);
+      setSaveState(synced ? "synced" : "queued");
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [statuses, details, customStops, reverse, optimizedIds, startedAt, completedAt, activity, vehicle, lastPosition, hydrated]);
+
+  useEffect(() => {
+    const flush = async () => {
+      if (!hydrated) return;
+      setSaveState("syncing");
+      const synced = await flushJourneyOutbox(JOURNEY_ID);
+      setSaveState(synced ? "synced" : "queued");
+    };
+    window.addEventListener("online", flush);
+    return () => window.removeEventListener("online", flush);
+  }, [hydrated]);
 
   const setStatus = (id: string, status: StopStatus) => {
     setStatuses((old) => ({ ...old, [id]: status }));
@@ -168,30 +229,33 @@ export default function RouteApp() {
       setActivity((old) => old.filter((entry) => entry.stopId !== id));
       return;
     }
-    if (!startedAt) setStartedAt(Date.now());
+    const now = Date.now();
+    if (!startedAt) setStartedAt(now);
     const stop = allStops.find((item) => item.id === id);
     if (!stop) return;
     setActivity((old) => [{
-      id: `${id}-${Date.now()}`,
+      id: `${id}-${now}`,
       stopId: id,
       stopName: stop.name,
+      stopAddress: stop.address,
       status,
-      at: Date.now(),
-    }, ...old.filter((entry) => entry.stopId !== id)].slice(0, 8));
+      at: now,
+    }, ...old.filter((entry) => entry.stopId !== id)].slice(0, allStops.length));
   };
 
   const startNearMe = () => {
     if (!navigator.geolocation) return setNotice("Este dispositivo no permite obtener la ubicación.");
     setNotice("Buscando tu ubicación…");
     navigator.geolocation.getCurrentPosition(
-      ({ coords }) => {
-        const me: Stop = { id: "me", name: "Mi ubicación", lat: coords.latitude, lng: coords.longitude, km: 0 };
+      ({ coords, timestamp }) => {
+        const me = { lat: coords.latitude, lng: coords.longitude };
+        setLastPosition({ lat: coords.latitude, lng: coords.longitude, accuracy: coords.accuracy, at: timestamp });
         const useReverse = distance(me, STOPS.at(-1)!) < distance(me, STOPS[0]);
         setReverse(useReverse);
-        setNotice(useReverse ? "Conviene comenzar por la casa 41." : "Conviene comenzar por la casa 01.");
+        setNotice(useReverse ? `Conviene comenzar por ${addressLabel(STOPS.at(-1)!)}.` : `Conviene comenzar por ${addressLabel(STOPS[0])}.`);
       },
       () => setNotice("No pude obtener tu ubicación. Puedes invertir el sentido manualmente."),
-      { enableHighAccuracy: true, timeout: 10000 },
+      { enableHighAccuracy: true, timeout: 10_000 },
     );
   };
 
@@ -200,12 +264,18 @@ export default function RouteApp() {
       setStatuses({});
       setDetails({});
       setStartedAt(null);
+      setCompletedAt(null);
       setActivity([]);
+      setLastPosition(null);
+      setNotice("Jornada reiniciada. La ruta optimizada se mantiene disponible.");
     }
   };
 
   const updateDetail = (id: string, field: keyof StopDetail, value: string) => {
-    setDetails((old) => ({ ...old, [id]: { kilos: "", material: "Mixto", note: "", ...old[id], [field]: value } }));
+    setDetails((old) => {
+      const existing = old[id] ?? { kilos: "", material: "Mixto", note: "" };
+      return { ...old, [id]: { ...existing, [field]: value } };
+    });
   };
 
   const addStop = () => {
@@ -215,7 +285,8 @@ export default function RouteApp() {
       setNotice("Escribe un nombre, latitud y longitud válidos.");
       return;
     }
-    const nearest = STOPS.reduce((best, stop) => distance(stop, { id: "new", name: "", lat, lng, km: 0 }) < distance(best, { id: "new", name: "", lat, lng, km: 0 }) ? stop : best);
+    const target = { lat, lng };
+    const nearest = STOPS.reduce((best, stop) => distance(stop, target) < distance(best, target) ? stop : best);
     const stop: Stop = { id: `N${Date.now()}`, name: newStop.name.trim(), lat, lng, km: nearest.km };
     setCustomStops((old) => [...old, stop]);
     setOptimizedIds([]);
@@ -223,35 +294,90 @@ export default function RouteApp() {
     setNotice("Casa agregada cerca de la parada correspondiente.");
   };
 
-  const optimizeRoute = async () => {
+  const optimizeRoute = useCallback(async (origin?: { lat: number; lng: number }, automatic = false) => {
     if (!navigator.onLine) {
       setNotice("Estás sin internet. Mantendré la última ruta guardada hasta recuperar señal.");
       return;
     }
+    if (autoRoutingRef.current) return;
+
+    const pendingStops = ordered.filter((stop) => (statuses[stop.id] ?? "pending") === "pending");
+    if (pendingStops.length < 2) return;
+
+    autoRoutingRef.current = true;
     setOptimizing(true);
-    setNotice("Calculando el mejor orden por calles y sentidos de tránsito…");
+    setNotice(automatic ? "Detecté un cambio de recorrido. Reordenando las paradas pendientes…" : "Calculando el mejor orden por calles y sentidos de tránsito…");
     try {
-      const coordinates = allStops.map((stop) => `${stop.lng},${stop.lat}`).join(";");
-      const response = await fetch(`https://router.project-osrm.org/trip/v1/driving/${coordinates}?roundtrip=false&source=first&destination=last&overview=false&steps=false`);
+      const inputs = origin
+        ? [{ id: "current-position", name: "Ubicación actual", lat: origin.lat, lng: origin.lng, km: 0 }, ...pendingStops]
+        : pendingStops;
+      const coordinates = inputs.map((stop) => `${stop.lng},${stop.lat}`).join(";");
+      const destination = origin ? "any" : "last";
+      const response = await fetch(`https://router.project-osrm.org/trip/v1/driving/${coordinates}?roundtrip=false&source=first&destination=${destination}&overview=false&steps=false`);
       if (!response.ok) throw new Error("optimizer unavailable");
-      const data = await response.json() as { code: string; waypoints: Array<{ waypoint_index: number }> };
-      if (data.code !== "Ok" || data.waypoints.length !== allStops.length) throw new Error("invalid route");
-      const ids = allStops.map((stop, index) => ({ id: stop.id, order: data.waypoints[index].waypoint_index })).sort((a, b) => a.order - b.order).map((item) => item.id);
-      setOptimizedIds(ids);
+      const data = await response.json() as OptimizerResponse;
+      if (data.code !== "Ok" || data.waypoints.length !== inputs.length) throw new Error("invalid route");
+
+      const sortedPending = pendingStops
+        .map((stop, index) => ({ stop, order: data.waypoints[index + (origin ? 1 : 0)].waypoint_index }))
+        .sort((a, b) => a.order - b.order)
+        .map((item) => item.stop.id);
+      const completedIds = ordered
+        .filter((stop) => (statuses[stop.id] ?? "pending") !== "pending")
+        .map((stop) => stop.id);
+
+      setOptimizedIds([...completedIds, ...sortedPending]);
       setReverse(false);
-      setNotice("Ruta optimizada por calles reales, sentidos y restricciones de giro. Quedó guardada para usarla sin señal.");
+      setNotice(automatic
+        ? "Ruta reajustada desde la ubicación actual. Las casas ya realizadas no cambiaron."
+        : "Ruta optimizada por calles reales, sentidos y restricciones de giro. Quedó guardada para usarla sin señal.");
     } catch {
       setNotice("No pude contactar el optimizador. La ruta anterior sigue disponible y no se perdió nada.");
     } finally {
+      autoRoutingRef.current = false;
       setOptimizing(false);
     }
-  };
+  }, [ordered, statuses]);
+
+  useEffect(() => {
+    if (!hydrated || !gpsTracking || !startedAt || pending < 2) return;
+    const checkDeviation = () => {
+      if (!navigator.onLine || autoRoutingRef.current || Date.now() - lastAutoReorderAtRef.current < 120_000) return;
+      navigator.geolocation.getCurrentPosition(({ coords, timestamp }) => {
+        const position = { lat: coords.latitude, lng: coords.longitude };
+        setLastPosition({ ...position, accuracy: coords.accuracy, at: timestamp });
+        const pendingStops = ordered.filter((stop) => (statuses[stop.id] ?? "pending") === "pending");
+        const active = pendingStops[0];
+        if (!active) return;
+        const nearest = pendingStops.reduce((best, stop) => distance(position, stop) < distance(position, best) ? stop : best);
+        const currentDistance = distance(position, active);
+        const nearestDistance = distance(position, nearest);
+        if (nearest.id !== active.id && currentDistance > 0.25 && nearestDistance + 0.08 < currentDistance) {
+          lastAutoReorderAtRef.current = Date.now();
+          void optimizeRoute(position, true);
+        }
+      }, () => {}, { enableHighAccuracy: true, maximumAge: 15_000, timeout: 12_000 });
+    };
+    const timer = window.setInterval(checkDeviation, 30_000);
+    checkDeviation();
+    return () => window.clearInterval(timer);
+  }, [hydrated, gpsTracking, startedAt, pending, ordered, statuses, optimizeRoute]);
 
   const exportCsv = () => {
-    const rows = [["Orden", "Casa", "Dirección", "Estado", "Kilos", "Material", "Observaciones"]];
+    const rows = [["Orden", "Casa", "Dirección", "Estado", "Hora visita", "Kilos", "Tipo de residuo", "Observaciones"]];
     ordered.forEach((stop, index) => {
       const detail = details[stop.id] || { kilos: "", material: "", note: "" };
-      rows.push([String(index + 1), stop.name, stop.address ?? "Punto GPS registrado", statuses[stop.id] || "pending", detail.kilos, detail.material, detail.note]);
+      const visit = activityByStop.get(stop.id);
+      rows.push([
+        String(index + 1),
+        stop.name,
+        stop.address ?? "Punto GPS registrado",
+        statuses[stop.id] || "pending",
+        visit ? new Date(visit.at).toLocaleString("es-CL") : "",
+        detail.kilos,
+        detail.material,
+        detail.note,
+      ]);
     });
     const csv = rows.map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(";")).join("\n");
     const blob = new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8" });
@@ -263,6 +389,14 @@ export default function RouteApp() {
     URL.revokeObjectURL(url);
   };
 
+  const currentDetail = current ? details[current.id] || { kilos: "", material: "Mixto", note: "" } : null;
+  const saveLabel = saveState === "loading" ? "Cargando jornada…"
+    : saveState === "syncing" ? "Sincronizando…"
+      : saveState === "queued" ? "Guardado en el teléfono · pendiente de sincronizar"
+        : saveState === "error" ? "Guardado local · revisa la conexión"
+          : saveState === "synced" ? "Jornada guardada y sincronizada"
+            : "Jornada guardada automáticamente";
+
   return (
     <main>
       <OfflineSupport />
@@ -272,7 +406,11 @@ export default function RouteApp() {
           <span>Reciclaje en movimiento</span>
           <strong>Ruta Verde · Santuario</strong>
         </div>
-        <div className="header-actions"><AppInstall /><div className="header-date"><span>Viernes · recorrido activo</span><strong>{allStops.length} casas</strong></div></div>
+        <div className="header-actions">
+          <div style={{ textAlign: "right", fontSize: 10, fontWeight: 800, color: saveState === "queued" ? "#ffd08a" : "#dcec75" }}>{saveLabel}</div>
+          <AppInstall />
+          <div className="header-date"><span>Viernes · recorrido activo</span><strong>{allStops.length} casas</strong></div>
+        </div>
       </header>
 
       <nav className="app-tabs" aria-label="Cambiar vista de la aplicación">
@@ -342,13 +480,16 @@ export default function RouteApp() {
             estimatedMinutes={estimatedMinutes}
             startedAt={startedAt}
             privacyMode={presentationMode}
-            onTrackingChange={(active) => { if (active && !startedAt) setStartedAt(Date.now()); }}
-            onArrival={(stop, distance) => setArrival({ stop, distance })}
+            onTrackingChange={(active: boolean) => {
+              setGpsTracking(active);
+              if (active && !startedAt) setStartedAt(Date.now());
+            }}
+            onArrival={(stop: Stop, distanceMeters: number) => setArrival({ stop, distance: distanceMeters })}
           />
           <div className="stats-row">
             <article><span>Recorrido planificado</span><strong>4,5 km</strong><small>ruta base entre las 41 viviendas</small></article>
             <article><span>Tiempo transcurrido</span><strong>{startedAt ? `${Math.floor(elapsedMinutes / 60)} h ${elapsedMinutes % 60} min` : "Sin iniciar"}</strong><small>{startedAt ? `inicio ${new Date(startedAt).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}` : "comienza al activar la jornada"}</small></article>
-            <article><span>Tiempo restante</span><strong>~{Math.floor(estimatedMinutes / 60)} h {estimatedMinutes % 60} min</strong><small>incluye 2 min por retiro</small></article>
+            <article><span>Tiempo restante</span><strong>~{Math.floor(estimatedMinutes / 60)} h {estimatedMinutes % 60} min</strong><small>{completedAt ? `terminado ${new Date(completedAt).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}` : "incluye 2 min por retiro"}</small></article>
           </div>
         </div>
 
@@ -359,6 +500,12 @@ export default function RouteApp() {
               <div className="next-number">{ordered.findIndex((stop) => stop.id === current.id) + 1}</div>
               <h2>{addressLabel(current)}</h2>
               <p>{residentLabel(current)} · km {current.km.toFixed(2).replace(".", ",")}</p>
+              <div style={{ display: "grid", gap: 7, margin: "14px 0", padding: 12, borderRadius: 13, background: "#eef2eb", fontSize: 11 }}>
+                <span><strong>Estado:</strong> Pendiente</span>
+                <span><strong>Tipo de residuo:</strong> {currentDetail?.material || "Mixto"}</span>
+                <span><strong>Observaciones:</strong> {currentDetail?.note || "Sin observaciones"}</span>
+                <span><strong>Última ubicación:</strong> {lastPosition ? `${new Date(lastPosition.at).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })} · precisión ${Math.round(lastPosition.accuracy ?? 0)} m` : "Aún no registrada"}</span>
+              </div>
               <a className="primary-action" href={mapsUrl(current, vehicle)} target="_blank" rel="noreferrer">Abrir navegación</a>
               <button className="complete-action" onClick={() => setStatus(current.id, "done")}>✓ Retiro realizado · siguiente</button>
               <button className="absent-action" onClick={() => setStatus(current.id, "absent")}>No estaba · marcar ausente</button>
@@ -367,10 +514,10 @@ export default function RouteApp() {
             <div className="finished"><strong>Recorrido terminado</strong><p>Las {allStops.length} casas ya fueron revisadas.</p></div>
           )}
           <div className="quick-settings">
-            <label>Vehículo<select value={vehicle} onChange={(e) => setVehicle(e.target.value)}><option>Camioneta</option><option>Camión</option><option>Auto</option><option>Bicicleta</option></select></label>
-            <button className="optimize-button" onClick={optimizeRoute} disabled={optimizing}>{optimizing ? "Optimizando…" : optimizedIds.length ? "Optimizar nuevamente" : "Optimizar ruta por calles"}</button>
+            <label>Vehículo<select value={vehicle} onChange={(event: InputChange) => setVehicle(event.target.value)}><option>Camioneta</option><option>Camión</option><option>Auto</option><option>Bicicleta</option></select></label>
+            <button className="optimize-button" onClick={() => void optimizeRoute()} disabled={optimizing}>{optimizing ? "Optimizando…" : optimizedIds.length ? "Optimizar nuevamente" : "Optimizar ruta por calles"}</button>
             <button onClick={startNearMe}>Comenzar por el extremo más cercano</button>
-            <button onClick={() => setReverse((v) => !v)}>Invertir sentido</button>
+            <button onClick={() => setReverse((value) => !value)}>Invertir sentido</button>
           </div>
           <div className="segment-box">
             <strong>Navegar el recorrido por tramos</strong>
@@ -392,9 +539,10 @@ export default function RouteApp() {
           {visible.map((stop, index) => {
             const status = statuses[stop.id] ?? "pending";
             const detail = details[stop.id] || { kilos: "", material: "Mixto", note: "" };
+            const visit = activityByStop.get(stop.id);
             return <article className={`stop-row ${status} ${current?.id === stop.id ? "current" : ""}`} key={stop.id}>
               <div className="stop-order">{String(index + 1).padStart(2, "0")}</div>
-              <div className="stop-main"><strong>{addressLabel(stop)}</strong><span>{residentLabel(stop)} · {stop.km.toFixed(2).replace(".", ",")} km</span></div>
+              <div className="stop-main"><strong>{addressLabel(stop)}</strong><span>{residentLabel(stop)} · {detail.material || "Mixto"} · {formatVisitTime(visit)}</span>{detail.note && <span>Obs.: {detail.note}</span>}</div>
               <div className={`status-pill ${status}`}>{status === "done" ? "Realizado" : status === "absent" ? "Ausente" : current?.id === stop.id ? "Siguiente" : "Pendiente"}</div>
               <a className="row-nav" href={mapsUrl(stop, vehicle)} target="_blank" rel="noreferrer">Navegar</a>
               <div className="row-actions">
@@ -402,9 +550,9 @@ export default function RouteApp() {
                 {status === "pending" ? <><button aria-label={`Marcar ${addressLabel(stop)} como realizado`} onClick={() => setStatus(stop.id, "done")}>✓</button><button aria-label={`Marcar ${addressLabel(stop)} como ausente`} onClick={() => setStatus(stop.id, "absent")}>×</button></> : <button className="undo" onClick={() => setStatus(stop.id, "pending")}>Deshacer</button>}
               </div>
               {detailStop === stop.id && <div className="stop-detail">
-                <label>Kilos retirados<input inputMode="decimal" value={detail.kilos} onChange={(e) => updateDetail(stop.id, "kilos", e.target.value)} placeholder="Ej. 8,5" /></label>
-                <label>Material<select value={detail.material} onChange={(e) => updateDetail(stop.id, "material", e.target.value)}><option>Mixto</option><option>Vidrio</option><option>Plástico</option><option>Cartón</option><option>Latas</option><option>Otro</option></select></label>
-                <label className="note-field">Observaciones<input value={detail.note} onChange={(e) => updateDetail(stop.id, "note", e.target.value)} placeholder="Bolsa afuera, llamar, acceso cerrado…" /></label>
+                <label>Kilos retirados<input inputMode="decimal" value={detail.kilos} onChange={(event: InputChange) => updateDetail(stop.id, "kilos", event.target.value)} placeholder="Ej. 8,5" /></label>
+                <label>Tipo de residuo<select value={detail.material} onChange={(event: InputChange) => updateDetail(stop.id, "material", event.target.value)}><option>Mixto</option><option>Vidrio</option><option>Plástico</option><option>Cartón</option><option>Latas</option><option>Orgánico</option><option>Otro</option></select></label>
+                <label className="note-field">Observaciones<input value={detail.note} onChange={(event: InputChange) => updateDetail(stop.id, "note", event.target.value)} placeholder="Bolsa afuera, llamar, acceso cerrado…" /></label>
               </div>}
             </article>;
           })}
@@ -413,15 +561,15 @@ export default function RouteApp() {
           <details className="add-stop">
             <summary>Agregar una casa nueva</summary>
             <div className="add-stop-form">
-              <label>Nombre<input value={newStop.name} onChange={(e) => setNewStop((old) => ({ ...old, name: e.target.value }))} placeholder="Nombre del retiro" /></label>
-              <label>Latitud<input inputMode="decimal" value={newStop.lat} onChange={(e) => setNewStop((old) => ({ ...old, lat: e.target.value }))} placeholder="-41.4600" /></label>
-              <label>Longitud<input inputMode="decimal" value={newStop.lng} onChange={(e) => setNewStop((old) => ({ ...old, lng: e.target.value }))} placeholder="-72.9000" /></label>
+              <label>Nombre<input value={newStop.name} onChange={(event: InputChange) => setNewStop((old) => ({ ...old, name: event.target.value }))} placeholder="Nombre del retiro" /></label>
+              <label>Latitud<input inputMode="decimal" value={newStop.lat} onChange={(event: InputChange) => setNewStop((old) => ({ ...old, lat: event.target.value }))} placeholder="-41.4600" /></label>
+              <label>Longitud<input inputMode="decimal" value={newStop.lng} onChange={(event: InputChange) => setNewStop((old) => ({ ...old, lng: event.target.value }))} placeholder="-72.9000" /></label>
               <button onClick={addStop}>Agregar al recorrido</button>
             </div>
           </details>
           <button className="export-button" onClick={exportCsv}>Descargar informe CSV</button>
         </div>
-        <div className="list-footer"><span>Avances, kilos y observaciones quedan guardados en este dispositivo.</span><button onClick={reset}>Reiniciar jornada</button></div>
+        <div className="list-footer"><span>Estados, horas, ubicación, kilos y observaciones se guardan automáticamente y se sincronizan al volver internet.</span><button onClick={reset}>Reiniciar jornada</button></div>
       </section>
       </>}
 
