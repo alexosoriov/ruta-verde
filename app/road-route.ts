@@ -1,8 +1,9 @@
-import * as L from "leaflet";
 import type { Stop } from "./route-data";
 
+export type RoutePoint = [number, number];
+
 export type RouteDetails = {
-  points: L.LatLngExpression[];
+  points: RoutePoint[];
   distanceKm: number;
   durationMinutes: number;
   source: "network" | "cache" | "fallback";
@@ -24,7 +25,7 @@ type OsrmRoute = {
 };
 
 type StoredRoute = {
-  points: [number, number][];
+  points: RoutePoint[];
   distanceKm: number;
   durationMinutes: number;
   savedAt: number;
@@ -59,7 +60,7 @@ function fallbackRoute(stops: Stop[]): RouteDetails {
     0,
   );
   return {
-    points: stops.map((stop) => [stop.lat, stop.lng] as [number, number]),
+    points: stops.map((stop) => [stop.lat, stop.lng]),
     distanceKm,
     durationMinutes: distanceKm > 0 ? (distanceKm / FALLBACK_SPEED_KMH) * 60 : 0,
     source: "fallback",
@@ -86,10 +87,7 @@ function storeRoute(storageKey: string, details: RouteDetails) {
   if (typeof window === "undefined") return;
   try {
     const stored: StoredRoute = {
-      points: details.points.map((point) => {
-        const latLng = L.latLng(point);
-        return [latLng.lat, latLng.lng];
-      }),
+      points: details.points,
       distanceKm: details.distanceKm,
       durationMinutes: details.durationMinutes,
       savedAt: Date.now(),
@@ -149,7 +147,7 @@ export async function getRoadRouteDetails(stops: Stop[], signal?: AbortSignal): 
   try {
     const result = await requestRoute(key, signal);
     const details: RouteDetails = {
-      points: result.coordinates.map(([lng, lat]) => [lat, lng] as [number, number]),
+      points: result.coordinates.map(([lng, lat]) => [lat, lng]),
       distanceKm: result.distanceMeters / 1000,
       durationMinutes: result.durationSeconds / 60,
       source: "network",
