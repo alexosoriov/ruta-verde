@@ -32,28 +32,35 @@ La herramienta genera un IV aleatorio nuevo en cada ejecución. Nunca reutilices
 - Los respaldos heredados en texto plano se migran y eliminan automáticamente.
 - El service worker nunca almacena respuestas `/api/`.
 
-## Acceso
+## Cuentas y permisos
 
-Secretos obligatorios de Cloudflare:
+Las cuentas se configuran exclusivamente mediante secretos:
 
-- `ROUTE_USERNAME`
-- `ROUTE_PASSWORD`
-- `ROUTE_SESSION_SECRET`
-- `ROUTE_DATA_KEY`
+- Conductor: `ROUTE_USERNAME` y `ROUTE_PASSWORD`.
+- Jefatura: `JEFATURA_USERNAME` y `JEFATURA_PASSWORD`.
+- Superadministrador: `SUPERADMIN_USERNAME` y `SUPERADMIN_PASSWORD`.
+- Compartidos: `ROUTE_SESSION_SECRET` y `ROUTE_DATA_KEY`.
 
-Controles activos:
+Permisos activos:
+
+- Conductor escribe jornada y seguimiento, pero no abre la vista exclusiva de Jefatura.
+- Jefatura lee seguimiento y métricas, pero no puede escribir la jornada del conductor.
+- Superadministrador tiene acceso completo.
+
+## Controles de acceso
 
 - cookie `__Host-rv_session`, `HttpOnly`, `Secure` y `SameSite=Strict` en HTTPS;
-- firma HMAC-SHA-256 y sesiones de cuatro horas;
+- firma HMAC-SHA-256 y duración de sesión según el rol;
 - comparación constante de credenciales;
 - bloqueo progresivo después de cinco intentos fallidos;
 - identificadores de límite derivados por HMAC, sin almacenar usuario o IP en claro;
+- verificación de mismo origen para iniciar o cerrar sesión;
 - HSTS, CSP, `X-Frame-Options: DENY`, `no-referrer` y `Permissions-Policy`;
 - respuestas privadas con `Cache-Control: no-store`.
 
 ## Rotación de secretos
 
-La contraseña y `ROUTE_SESSION_SECRET` pueden rotarse directamente en Cloudflare. Para rotar `ROUTE_DATA_KEY` se debe volver a cifrar el recorrido base y migrar o eliminar los registros D1 cifrados con la clave anterior.
+Las contraseñas y `ROUTE_SESSION_SECRET` pueden rotarse directamente en Cloudflare. Para rotar `ROUTE_DATA_KEY` se debe volver a cifrar el recorrido base y migrar o eliminar los registros D1 cifrados con la clave anterior.
 
 Nunca publiques secretos en commits, issues, pull requests, capturas, chats o archivos `.env`.
 
