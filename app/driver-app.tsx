@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import "./map-camera-guard";
 import RouteApp from "./route-app";
 
 export default function DriverApp() {
