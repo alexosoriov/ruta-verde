@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Mapa offline Ruta Verde">
+  <rect width="256" height="256" fill="#edf4ef"/>
+  <path d="M0 32H256M0 96H256M0 160H256M0 224H256M32 0V256M96 0V256M160 0V256M224 0V256" stroke="#d6e4da" stroke-width="2"/>
+  <path d="M-20 210L72 118L132 162L276 18" fill="none" stroke="#c2d8ca" stroke-width="18" stroke-linecap="round"/>
+  <path d="M-20 210L72 118L132 162L276 18" fill="none" stroke="#ffffff" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="128" cy="116" r="30" fill="#123a31" opacity="0.94"/>
+  <path d="M112 106h32v21h-32zM117 99h22l8 8h-38z" fill="#dff5e7"/>
+  <circle cx="119" cy="130" r="4" fill="#dff5e7"/><circle cx="138" cy="130" r="4" fill="#dff5e7"/>
+  <text x="128" y="163" text-anchor="middle" font-family="Arial, sans-serif" font-size="13" font-weight="700" fill="#123a31">MAPA OFFLINE</text>
+  <text x="128" y="181" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#35665a">Ruta y viviendas disponibles</text>
+</svg>
