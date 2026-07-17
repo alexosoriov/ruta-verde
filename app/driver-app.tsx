@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import "./map-camera-guard";
+import "./gps-event-bridge";
+import LevelOneSuite from "./level-one-suite";
 import RouteApp from "./route-app";
 
 export default function DriverApp() {
@@ -78,7 +80,7 @@ export default function DriverApp() {
         .hero-actions > button,
         .presentation-bar { display: none !important; }
         .workspace { grid-template-columns: minmax(0, 1fr) 390px; }
-        .next-card { position: sticky; top: 70px; border-radius: 22px !important; box-shadow: 0 16px 42px rgba(20, 52, 41, .14) !important; }
+        .next-card { position: sticky; top: 170px; border-radius: 22px !important; box-shadow: 0 16px 42px rgba(20, 52, 41, .14) !important; }
         .primary-action, .complete-action, .absent-action, .map-buttons button {
           min-height: 54px !important;
           font-size: 14px !important;
@@ -103,6 +105,7 @@ export default function DriverApp() {
           .next-card p { font-size: 13px; }
         }
       `}</style>
+      <LevelOneSuite />
       <RouteApp />
     </>
   );
