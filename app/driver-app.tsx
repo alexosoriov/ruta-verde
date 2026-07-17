@@ -3,10 +3,22 @@
 import { useEffect, useState } from "react";
 import "./map-camera-guard";
 import RouteApp from "./route-app";
+import StageOneTools from "./stage-one-tools";
+import { initializeRouteCorrections } from "./route-corrections";
 
 export default function DriverApp() {
   const [online, setOnline] = useState(true);
   const [now, setNow] = useState(() => Date.now());
+  const [routeReady, setRouteReady] = useState(false);
+  const [routeVersion, setRouteVersion] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    void initializeRouteCorrections().finally(() => {
+      if (active) setRouteReady(true);
+    });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     setOnline(navigator.onLine);
@@ -28,10 +40,10 @@ export default function DriverApp() {
       <div className="driver-status-bar" role="status" aria-live="polite">
         <div className="driver-brand">
           <span className="driver-truck">🚛</span>
-          <span><strong>Ruta Verde</strong><small>Recorrido en terreno</small></span>
+          <span><strong>Ruta Verde</strong><small>Recorrido en terreno · versión 1.0</small></span>
         </div>
         <div className="driver-live-status">
-          <span className="status-pill gps-controlled"><i />GPS controlado desde el mapa</span>
+          <span className="status-pill gps-controlled"><i />GPS y navegación</span>
           <span className={`status-pill ${online ? "good" : "warning"}`}><i />{online ? "En línea" : "Modo sin conexión"}</span>
           <span className="driver-time">{new Date(now).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}</span>
         </div>
@@ -73,6 +85,17 @@ export default function DriverApp() {
         .status-pill.warning { color: #ffd166; }
         .status-pill.gps-controlled { color: #9fd3ff; }
         .driver-time { font-size: 13px; font-weight: 800; color: rgba(255,255,255,.78); }
+        .route-preload {
+          min-height: 70vh;
+          display: grid;
+          place-items: center;
+          padding: 24px;
+          background: #eef3ef;
+          color: #214d3e;
+          font-size: 14px;
+          font-weight: 900;
+          text-align: center;
+        }
 
         .app-tabs button:nth-child(2),
         .hero-actions > button,
@@ -103,7 +126,15 @@ export default function DriverApp() {
           .next-card p { font-size: 13px; }
         }
       `}</style>
-      <RouteApp />
+
+      {routeReady ? (
+        <>
+          <StageOneTools onRouteChanged={() => setRouteVersion((value) => value + 1)} />
+          <RouteApp key={routeVersion} />
+        </>
+      ) : (
+        <div className="route-preload">Aplicando correcciones seguras y preparando Ruta Verde 1.0…</div>
+      )}
     </>
   );
 }
