@@ -1,79 +1,141 @@
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
 import "./gps-zoom-guard";
 import RouteApp from "./route-app";
 
+type GpsState = {
+  accuracy: number | null;
+  updatedAt: number | null;
+  error: string | null;
+};
+
+function gpsLabel(accuracy: number | null, error: string | null) {
+  if (error) return { text: "Sin señal GPS", tone: "danger" };
+  if (accuracy === null) return { text: "Buscando GPS…", tone: "warning" };
+  if (accuracy <= 12) return { text: "GPS excelente", tone: "good" };
+  if (accuracy <= 30) return { text: "GPS bueno", tone: "good" };
+  return { text: "GPS débil", tone: "warning" };
+}
+
 export default function DriverApp() {
+  const [online, setOnline] = useState(true);
+  const [now, setNow] = useState(() => Date.now());
+  const [gps, setGps] = useState<GpsState>({ accuracy: null, updatedAt: null, error: null });
+
+  useEffect(() => {
+    setOnline(navigator.onLine);
+    const onOnline = () => setOnline(true);
+    const onOffline = () => setOnline(false);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    const clock = window.setInterval(() => setNow(Date.now()), 15_000);
+
+    let watchId: number | null = null;
+    if (navigator.geolocation) {
+      watchId = navigator.geolocation.watchPosition(
+        (position) => {
+          setGps({ accuracy: Math.round(position.coords.accuracy), updatedAt: Date.now(), error: null });
+        },
+        (error) => {
+          const message = error.code === 1 ? "Permiso de ubicación bloqueado" : "Sin señal GPS";
+          setGps((current) => ({ ...current, error: message }));
+        },
+        { enableHighAccuracy: true, maximumAge: 1_000, timeout: 15_000 },
+      );
+    }
+
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+      window.clearInterval(clock);
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    };
+  }, []);
+
+  const gpsStatus = useMemo(() => {
+    if (gps.updatedAt && now - gps.updatedAt > 40_000) return { text: "GPS sin actualizar", tone: "danger" };
+    return gpsLabel(gps.accuracy, gps.error);
+  }, [gps, now]);
+
   return (
     <>
+      <div className="driver-status-bar" role="status" aria-live="polite">
+        <div className="driver-brand">
+          <span className="driver-truck">🚛</span>
+          <span><strong>Ruta Verde</strong><small>Recorrido en terreno</small></span>
+        </div>
+        <div className="driver-live-status">
+          <span className={`status-pill ${gpsStatus.tone}`}><i />{gpsStatus.text}{gps.accuracy ? ` · ±${gps.accuracy} m` : ""}</span>
+          <span className={`status-pill ${online ? "good" : "warning"}`}><i />{online ? "En línea" : "Modo sin conexión"}</span>
+          <span className="driver-time">{new Date(now).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}</span>
+        </div>
+      </div>
+
       <style jsx global>{`
+        .driver-status-bar {
+          position: sticky;
+          top: 0;
+          z-index: 9999;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          padding: 10px 16px;
+          background: rgba(9, 31, 24, .96);
+          color: #fff;
+          box-shadow: 0 8px 26px rgba(0,0,0,.16);
+          backdrop-filter: blur(12px);
+        }
+        .driver-brand, .driver-live-status { display: flex; align-items: center; gap: 10px; }
+        .driver-brand span:last-child { display: grid; line-height: 1.05; }
+        .driver-brand small { margin-top: 4px; color: rgba(255,255,255,.68); font-size: 11px; }
+        .driver-truck { font-size: 25px; filter: drop-shadow(0 4px 6px rgba(0,0,0,.3)); }
+        .status-pill {
+          display: inline-flex;
+          align-items: center;
+          gap: 7px;
+          min-height: 34px;
+          padding: 0 11px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 800;
+          background: rgba(255,255,255,.1);
+          white-space: nowrap;
+        }
+        .status-pill i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px rgba(255,255,255,.08); }
+        .status-pill.good { color: #70f0a8; }
+        .status-pill.warning { color: #ffd166; }
+        .status-pill.danger { color: #ff8585; }
+        .driver-time { font-size: 13px; font-weight: 800; color: rgba(255,255,255,.78); }
+
         .app-tabs button:nth-child(2),
         .hero-actions > button,
-        .presentation-bar {
-          display: none !important;
+        .presentation-bar { display: none !important; }
+        .workspace { grid-template-columns: minmax(0, 1fr) 390px; }
+        .next-card { position: sticky; top: 70px; border-radius: 22px !important; box-shadow: 0 16px 42px rgba(20, 52, 41, .14) !important; }
+        .primary-action, .complete-action, .absent-action, .map-buttons button {
+          min-height: 54px !important;
+          font-size: 14px !important;
+          border-radius: 14px !important;
         }
-
-        .workspace {
-          grid-template-columns: minmax(0, 1fr) 390px;
-        }
-
-        .next-card {
-          position: sticky;
-          top: 14px;
-        }
-
-        .primary-action,
-        .complete-action,
-        .absent-action,
-        .map-buttons button {
-          min-height: 52px !important;
-          font-size: 13px !important;
-        }
+        .complete-action { font-weight: 900 !important; }
+        .street-map { border-radius: 22px !important; overflow: hidden; box-shadow: 0 18px 45px rgba(20, 52, 41, .16); }
 
         @media (max-width: 900px) {
-          .hero,
-          .workflow-strip,
-          .stats-row,
-          .route-list-section,
-          .tools-panel {
-            display: none !important;
-          }
-
-          .workspace {
-            width: 100%;
-            grid-template-columns: 1fr;
-            gap: 10px;
-            padding: 10px;
-          }
-
-          .map-column {
-            order: 2;
-          }
-
-          .next-card {
-            order: 1;
-            position: static;
-            padding: 18px;
-          }
-
-          .street-map {
-            height: 58vh;
-            min-height: 390px;
-          }
-
-          .quick-settings,
-          .segment-box,
-          .next-card > div[style*="grid"] {
-            display: none !important;
-          }
-
-          .next-card h2 {
-            font-size: 29px;
-          }
-
-          .next-card p {
-            font-size: 13px;
-          }
+          .driver-status-bar { align-items: flex-start; padding: 9px 10px; }
+          .driver-live-status { gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+          .driver-time { display: none; }
+          .status-pill { min-height: 30px; padding: 0 9px; font-size: 10px; }
+          .driver-brand small { display: none; }
+          .hero, .workflow-strip, .stats-row, .route-list-section, .tools-panel { display: none !important; }
+          .workspace { width: 100%; grid-template-columns: 1fr; gap: 10px; padding: 10px; }
+          .map-column { order: 2; }
+          .next-card { order: 1; position: static; padding: 18px; border-radius: 20px !important; }
+          .street-map { height: 58vh; min-height: 390px; }
+          .quick-settings, .segment-box, .next-card > div[style*="grid"] { display: none !important; }
+          .next-card h2 { font-size: 29px; line-height: 1.05; }
+          .next-card p { font-size: 13px; }
         }
       `}</style>
       <RouteApp />
