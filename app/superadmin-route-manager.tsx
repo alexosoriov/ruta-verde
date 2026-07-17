@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ChangeEvent } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 
 type ExistingStop = {
   id: string;
@@ -31,6 +31,12 @@ type Preview = {
   inherited: number;
   supplied: number;
   unresolved: string[];
+};
+
+type CurrentRoute = {
+  total: number;
+  source: "catalog" | "vault" | "unknown";
+  updatedAt?: number;
 };
 
 const GENERIC_WORDS = new Set(["calle", "pje", "pasaje", "numero", "n", "de", "del", "la", "el"]);
@@ -93,7 +99,8 @@ function distanceKm(a: Pick<ExistingStop, "lat" | "lng">, b: Pick<ExistingStop, 
 }
 
 function findPrevious(address: string, current: ExistingStop[], usedIds: Set<string>) {
-  const exact = current.find((stop) => !usedIds.has(stop.id) && stop.address && addressKey(stop.address) === addressKey(address));
+  const exact = current.find((stop) =>
+    !usedIds.has(stop.id) && stop.address && addressKey(stop.address) === addressKey(address));
   if (exact) return exact;
 
   const number = houseNumber(address);
@@ -115,15 +122,33 @@ function extractHomes(parsed: unknown): UploadedHome[] | null {
   return null;
 }
 
+async function readCurrentRoute(): Promise<{ route: CurrentRoute; stops: ExistingStop[] }> {
+  const response = await fetch("/api/private-route", { cache: "no-store" });
+  const body = await response.json().catch(() => ({})) as {
+    stops?: ExistingStop[];
+    source?: "catalog" | "vault";
+    updatedAt?: number;
+    error?: string;
+  };
+  if (!response.ok || !Array.isArray(body.stops)) {
+    throw new Error(body.error || "No pude leer el recorrido activo.");
+  }
+  return {
+    route: {
+      total: body.stops.length,
+      source: body.source ?? "unknown",
+      updatedAt: body.updatedAt,
+    },
+    stops: body.stops,
+  };
+}
+
 async function prepareFile(file: File): Promise<Preview> {
   const parsed = JSON.parse(await file.text()) as unknown;
   const homes = extractHomes(parsed);
   if (!homes?.length) throw new Error("El archivo no contiene una lista de viviendas.");
 
-  const response = await fetch("/api/private-route", { cache: "no-store" });
-  const body = await response.json().catch(() => ({})) as { stops?: ExistingStop[]; error?: string };
-  if (!response.ok || !Array.isArray(body.stops)) throw new Error(body.error || "No pude leer el recorrido actual.");
-
+  const { stops: currentStops } = await readCurrentRoute();
   const usedIds = new Set<string>();
   const unresolved: string[] = [];
   let inherited = 0;
@@ -140,7 +165,7 @@ async function prepareFile(file: File): Promise<Preview> {
       return [];
     }
 
-    const previous = findPrevious(address, body.stops!, usedIds);
+    const previous = findPrevious(address, currentStops, usedIds);
     const uploadedLat = asCoordinate(home.lat);
     const uploadedLng = asCoordinate(home.lng);
     const lat = uploadedLat ?? previous?.lat ?? null;
@@ -166,7 +191,9 @@ async function prepareFile(file: File): Promise<Preview> {
       lat,
       lng,
       km: 0,
-      coordinateSource: uploadedLat !== null && uploadedLng !== null ? "archivo" as const : "recorrido anterior" as const,
+      coordinateSource: uploadedLat !== null && uploadedLng !== null
+        ? "archivo" as const
+        : "recorrido anterior" as const,
     }];
   });
 
@@ -180,10 +207,19 @@ async function prepareFile(file: File): Promise<Preview> {
 }
 
 export default function SuperadminRouteManager() {
+  const [current, setCurrent] = useState<CurrentRoute | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
-  const [message, setMessage] = useState("Selecciona el archivo JSON preparado con el listado actualizado.");
+  const [message, setMessage] = useState("Selecciona el archivo Ruta_Verde_39_viviendas_actualizadas.json.");
   const [loading, setLoading] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void readCurrentRoute()
+      .then(({ route }) => { if (active) setCurrent(route); })
+      .catch(() => { if (active) setCurrent({ total: 0, source: "unknown" }); });
+    return () => { active = false; };
+  }, []);
 
   const chooseFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -196,8 +232,8 @@ export default function SuperadminRouteManager() {
       const result = await prepareFile(file);
       setPreview(result);
       setMessage(result.unresolved.length
-        ? `Faltan coordenadas en ${result.unresolved.length} registro(s). No se enviará nada todavía.`
-        : `Archivo listo: ${result.stops.length} viviendas verificadas.`);
+        ? `Faltan coordenadas en ${result.unresolved.length} registro(s). No se guardó ningún cambio.`
+        : `Listo para activar: ${result.stops.length} viviendas, incluidas ${result.supplied} ubicaciones nuevas.`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "No pude revisar el archivo.");
     } finally {
@@ -208,19 +244,30 @@ export default function SuperadminRouteManager() {
 
   const save = async () => {
     if (!preview || preview.unresolved.length || preview.stops.length < 1) return;
-    if (!window.confirm(`¿Reemplazar el recorrido actual por estas ${preview.stops.length} viviendas?`)) return;
+    if (!window.confirm(`¿Reemplazar las ${current?.total ?? ""} viviendas actuales por estas ${preview.stops.length}?`)) return;
     setLoading(true);
-    setMessage("Cifrando y guardando el nuevo listado…");
+    setMessage("Cifrando y activando el nuevo listado…");
     try {
       const response = await fetch("/api/private-route", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ version: 1, stops: preview.stops.map(({ coordinateSource: _source, ...stop }) => stop) }),
+        body: JSON.stringify({
+          version: 1,
+          stops: preview.stops.map(({ coordinateSource: _source, ...stop }) => stop),
+        }),
       });
       const body = await response.json().catch(() => ({})) as { total?: number; error?: string };
       if (!response.ok) throw new Error(body.error || "No fue posible actualizar las viviendas.");
+
+      const verified = await readCurrentRoute();
+      if (verified.route.total !== preview.stops.length || verified.route.source !== "catalog") {
+        throw new Error("El servidor recibió el listado, pero no lo devolvió como recorrido activo.");
+      }
+
+      setCurrent(verified.route);
       setSaved(true);
-      setMessage(`${body.total ?? preview.stops.length} viviendas guardadas de forma cifrada. Recarga la app para ver el nuevo recorrido.`);
+      setMessage(`${verified.route.total} viviendas activadas. Recargando el mapa automáticamente…`);
+      window.setTimeout(() => window.location.reload(), 1_200);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "No fue posible actualizar las viviendas.");
     } finally {
@@ -228,44 +275,63 @@ export default function SuperadminRouteManager() {
     }
   };
 
+  const sourceLabel = current?.source === "catalog"
+    ? "Listado actualizado en base de datos"
+    : current?.source === "vault"
+      ? "Listado antiguo cifrado"
+      : "Comprobando listado";
+
   return (
-    <details className="route-manager-safe">
-      <summary>🏠 Actualizar listado de viviendas</summary>
-      <div className="route-manager-body">
+    <section className={`route-manager-safe ${current?.total === 39 ? "is-current" : "needs-update"}`} aria-label="Actualizar viviendas">
+      <div className="route-manager-head">
         <div>
           <span className="route-manager-kicker">Solo Superadministrador</span>
-          <h2>Cargar recorrido actualizado</h2>
-          <p>El archivo se compara dentro de tu sesión. Las coordenadas existentes se reutilizan y el resultado se cifra antes de guardarse en la base de datos.</p>
+          <h2>{current?.total === 39 ? "Listado actualizado activo" : "Falta activar el listado actualizado"}</h2>
+          <p>{sourceLabel}. El mapa está usando <strong>{current?.total || "…"} viviendas</strong>.</p>
         </div>
-
-        <label className="route-file-button">
-          <span>{loading ? "Revisando…" : "Seleccionar archivo JSON"}</span>
-          <input type="file" accept="application/json,.json" onChange={chooseFile} disabled={loading} />
-        </label>
-
-        {preview && (
-          <div className="route-preview-grid">
-            <article><span>Viviendas</span><strong>{preview.stops.length}</strong></article>
-            <article><span>Coordenadas conservadas</span><strong>{preview.inherited}</strong></article>
-            <article><span>Puntos nuevos</span><strong>{preview.supplied}</strong></article>
-            <article className={preview.unresolved.length ? "warning" : "good"}><span>Sin ubicación</span><strong>{preview.unresolved.length}</strong></article>
-          </div>
-        )}
-
-        {preview?.unresolved.length ? (
-          <div className="route-unresolved"><strong>Registros pendientes:</strong>{preview.unresolved.map((item) => <span key={item}>{item}</span>)}</div>
-        ) : null}
-
-        <div className={`route-manager-message ${saved ? "success" : ""}`} role="status">{message}</div>
-        <div className="route-manager-actions">
-          <button type="button" onClick={save} disabled={loading || !preview || preview.unresolved.length > 0}>{loading ? "Procesando…" : "Guardar 39 viviendas"}</button>
-          {saved && <button type="button" className="secondary" onClick={() => window.location.reload()}>Recargar Ruta Verde</button>}
+        <div className="route-change-count">
+          <span>Recorrido</span>
+          <strong>{current?.total || "…"} → 39</strong>
         </div>
       </div>
 
+      {current?.total !== 39 && (
+        <div className="route-warning">
+          El mapa seguirá mostrando 41 viviendas hasta seleccionar el archivo y presionar “Activar 39 viviendas”.
+        </div>
+      )}
+
+      <label className="route-file-button">
+        <span>{loading ? "Revisando archivo…" : "1. Seleccionar archivo de 39 viviendas"}</span>
+        <input type="file" accept="application/json,.json" onChange={chooseFile} disabled={loading} />
+      </label>
+
+      {preview && (
+        <div className="route-preview-grid">
+          <article><span>Viviendas nuevas</span><strong>{preview.stops.length}</strong></article>
+          <article><span>Coordenadas conservadas</span><strong>{preview.inherited}</strong></article>
+          <article><span>Puntos nuevos en mapa</span><strong>{preview.supplied}</strong></article>
+          <article className={preview.unresolved.length ? "warning" : "good"}><span>Sin ubicación</span><strong>{preview.unresolved.length}</strong></article>
+        </div>
+      )}
+
+      {preview?.unresolved.length ? (
+        <div className="route-unresolved"><strong>Registros pendientes:</strong>{preview.unresolved.map((item) => <span key={item}>{item}</span>)}</div>
+      ) : null}
+
+      <div className={`route-manager-message ${saved ? "success" : ""}`} role="status">{message}</div>
+      <button
+        className="route-activate-button"
+        type="button"
+        onClick={save}
+        disabled={loading || !preview || preview.unresolved.length > 0}
+      >
+        {loading ? "Procesando…" : `2. Activar ${preview?.stops.length ?? 39} viviendas y recargar mapa`}
+      </button>
+
       <style jsx global>{`
-        .route-manager-safe{max-width:1500px;margin:10px auto 0;border:1px solid #cfddd4;border-radius:15px;background:#fff;overflow:hidden}.route-manager-safe>summary{cursor:pointer;list-style:none;padding:13px 16px;color:#204f40;font-size:13px;font-weight:900}.route-manager-safe>summary::-webkit-details-marker{display:none}.route-manager-body{padding:0 16px 16px;display:grid;gap:12px}.route-manager-kicker{font-size:10px;font-weight:900;text-transform:uppercase;color:#6a7e76}.route-manager-body h2{margin:3px 0 5px;color:#173f33;font-size:21px}.route-manager-body p{margin:0;color:#60756d;font-size:12px;line-height:1.5}.route-file-button{display:grid;place-items:center;min-height:48px;border:1px dashed #8fb7a5;border-radius:12px;background:#eff7f2;color:#1d6448;font-size:13px;font-weight:900;cursor:pointer}.route-file-button input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}.route-preview-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.route-preview-grid article{padding:12px;border:1px solid #d8e4dc;border-radius:12px;background:#f8faf8;display:grid;gap:3px}.route-preview-grid span{font-size:10px;text-transform:uppercase;color:#6c7e77;font-weight:850}.route-preview-grid strong{font-size:23px;color:#173f33}.route-preview-grid article.good{background:#edf8f1}.route-preview-grid article.warning{background:#fff4dc}.route-unresolved{display:grid;gap:5px;padding:12px;border-radius:11px;background:#fff4dc;color:#76551c;font-size:12px}.route-manager-message{padding:11px 12px;border-radius:10px;background:#eef3ef;color:#36584c;font-size:12px}.route-manager-message.success{background:#e3f4e9;color:#176042}.route-manager-actions{display:flex;gap:8px}.route-manager-actions button{flex:1;min-height:46px;border:0;border-radius:11px;background:#1d7656;color:#fff;font-weight:900}.route-manager-actions button.secondary{background:#e9f0eb;color:#244f41}.route-manager-actions button:disabled{opacity:.5;cursor:not-allowed}@media(max-width:700px){.route-manager-safe{margin:8px 8px 0}.route-preview-grid{grid-template-columns:1fr 1fr}.route-manager-actions{flex-direction:column}}
+        .route-manager-safe{max-width:1500px;margin:10px auto;padding:16px;border:2px solid #d49a2b;border-radius:17px;background:#fff9e8;display:grid;gap:12px;box-shadow:0 12px 30px rgba(72,52,15,.1)}.route-manager-safe.is-current{border-color:#53a579;background:#eff9f3}.route-manager-head{display:flex;align-items:center;justify-content:space-between;gap:16px}.route-manager-kicker{font-size:10px;font-weight:900;text-transform:uppercase;color:#746849}.route-manager-head h2{margin:3px 0 4px;color:#173f33;font-size:22px}.route-manager-head p{margin:0;color:#596d65;font-size:13px}.route-change-count{min-width:115px;padding:11px 14px;border-radius:13px;background:#fff;display:grid;text-align:center;border:1px solid #dfd3ab}.route-change-count span{font-size:10px;text-transform:uppercase;font-weight:850;color:#766b4d}.route-change-count strong{font-size:22px;color:#173f33}.route-warning{padding:12px;border-radius:11px;background:#fff0bd;color:#6e4b08;font-size:13px;font-weight:800}.route-file-button{display:grid;place-items:center;min-height:52px;border:2px dashed #6b9f87;border-radius:12px;background:#fff;color:#185d43;font-size:14px;font-weight:900;cursor:pointer}.route-file-button input{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}.route-preview-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}.route-preview-grid article{padding:12px;border:1px solid #d8e4dc;border-radius:12px;background:#fff;display:grid;gap:3px}.route-preview-grid span{font-size:10px;text-transform:uppercase;color:#6c7e77;font-weight:850}.route-preview-grid strong{font-size:23px;color:#173f33}.route-preview-grid article.good{background:#e9f8ef}.route-preview-grid article.warning{background:#fff0bd}.route-unresolved{display:grid;gap:5px;padding:12px;border-radius:11px;background:#ffe9cc;color:#76511b;font-size:12px}.route-manager-message{padding:11px 12px;border-radius:10px;background:#fff;color:#36584c;font-size:13px;border:1px solid #d8e4dc}.route-manager-message.success{background:#dff3e7;color:#176042}.route-activate-button{width:100%;min-height:50px;border:0;border-radius:12px;background:#176e50;color:#fff;font-size:14px;font-weight:950}.route-activate-button:disabled{opacity:.45;cursor:not-allowed}@media(max-width:700px){.route-manager-safe{margin:8px;padding:13px}.route-manager-head{align-items:flex-start}.route-change-count{min-width:95px}.route-preview-grid{grid-template-columns:1fr 1fr}}
       `}</style>
-    </details>
+    </section>
   );
 }
