@@ -2,7 +2,7 @@
 
 ## Alcance
 
-Ruta Verde protege nombres, direcciones, coordenadas, notas, actividad, viviendas nuevas y ubicación del vehículo tanto en el repositorio como en Cloudflare D1 y en el almacenamiento offline del teléfono.
+Ruta Verde protege nombres, direcciones, coordenadas, notas, actividad, viviendas nuevas y ubicación del vehículo tanto en el repositorio como en la base de datos administrada y en el almacenamiento offline del teléfono.
 
 ## Cifrado del recorrido base
 
@@ -18,8 +18,8 @@ La herramienta genera un IV aleatorio nuevo en cada ejecución. Nunca reutilices
 
 ## Cifrado de datos operativos
 
-- Las jornadas se cifran antes de escribirse en D1.
-- El seguimiento remoto se guarda en `secure_payload`; las columnas históricas de ubicación, próxima vivienda y actividad se ponen en cero o vacío.
+- Las jornadas se cifran antes de escribirse en la base de datos administrada.
+- El seguimiento remoto se guarda en un sobre cifrado; los campos históricos legibles se ponen en cero o vacío.
 - Se derivan subclaves independientes con HKDF-SHA-256 para jornada y seguimiento.
 - Cada escritura usa AES-256-GCM, IV aleatorio de 96 bits, AAD específico del registro y etiqueta de 128 bits.
 - Los registros antiguos en texto plano se migran y limpian al ser leídos.
@@ -34,7 +34,7 @@ La herramienta genera un IV aleatorio nuevo en cada ejecución. Nunca reutilices
 
 ## Cuentas y permisos
 
-Las cuentas se configuran exclusivamente mediante secretos:
+Las cuentas se configuran exclusivamente mediante secretos privados del entorno de alojamiento:
 
 - Conductor: `ROUTE_USERNAME` y `ROUTE_PASSWORD`.
 - Jefatura: `JEFATURA_USERNAME` y `JEFATURA_PASSWORD`.
@@ -60,7 +60,7 @@ Permisos activos:
 
 ## Rotación de secretos
 
-Las contraseñas y `ROUTE_SESSION_SECRET` pueden rotarse directamente en Cloudflare. Para rotar `ROUTE_DATA_KEY` se debe volver a cifrar el recorrido base y migrar o eliminar los registros D1 cifrados con la clave anterior.
+Las contraseñas y `ROUTE_SESSION_SECRET` deben rotarse desde la configuración privada del alojamiento activo. Cambiar `ROUTE_DATA_KEY` exige volver a cifrar el recorrido base y migrar o eliminar los registros cifrados con la clave anterior.
 
 Nunca publiques secretos en commits, issues, pull requests, capturas, chats o archivos `.env`.
 
