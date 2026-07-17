@@ -8,8 +8,8 @@ No se debe utilizar con datos reales hasta cumplir todos estos puntos:
 
 - el repositorio debe estar **privado**;
 - el historial público antiguo debe reescribirse o reemplazarse por un repositorio privado limpio;
-- todas las cuentas y claves deben existir únicamente como secretos o variables de Cloudflare;
-- el dominio debe cargar mediante HTTPS válido;
+- todas las cuentas y claves deben existir únicamente como secretos o variables privadas del alojamiento activo;
+- la dirección publicada debe cargar mediante HTTPS válido;
 - GitHub Actions debe terminar correctamente;
 - la prueba física de terreno debe aprobarse con el teléfono del conductor;
 - debe existir una persona responsable de la cuenta Superadministrador y de la recuperación de claves.
@@ -29,7 +29,7 @@ La cuenta de Conductor escribe la jornada y ubicación. Jefatura consulta seguim
 
 ## 3. Configuración real del vehículo
 
-Configura estas variables de Cloudflare con la ficha técnica o una medición real del camión:
+Configura estas variables privadas del alojamiento con la ficha técnica o una medición real del camión:
 
 - `VEHICLE_TYPE`: normalmente `delivery`, `goods` o `hgv`;
 - `VEHICLE_LENGTH_METERS`;
@@ -55,7 +55,7 @@ Cuando dos dispositivos trabajan sobre la misma jornada:
 - el servidor genera una revisión propia;
 - la jornada fusionada vuelve al teléfono cifrada;
 - se conserva un historial de auditoría dentro del snapshot;
-- las últimas 30 revisiones se almacenan cifradas en D1.
+- las últimas 30 revisiones se almacenan cifradas en la base de datos administrada.
 
 ## 5. Recuperación de una jornada
 
@@ -73,7 +73,7 @@ GET /api/journey-state?journey=santuario-AAAA-MM-DD&history=1
 GET /api/journey-state?journey=santuario-AAAA-MM-DD&revision=NUMERO
 ```
 
-La respuesta contiene el snapshot descifrado únicamente después de validar la sesión. La versión guardada en D1 permanece cifrada.
+La respuesta contiene el snapshot descifrado únicamente después de validar la sesión. La versión persistente permanece cifrada.
 
 Antes de restaurar manualmente una revisión:
 
@@ -154,7 +154,7 @@ No utilices los diagnósticos para escribir nombres, direcciones o notas manuale
 
 - privatizar el repositorio;
 - rotar contraseñas y secreto de sesión;
-- revisar accesos de Cloudflare y GitHub;
+- revisar accesos del alojamiento activo y de GitHub;
 - preservar registros para investigación;
 - evaluar migración a un repositorio privado limpio.
 
@@ -170,3 +170,7 @@ Ruta Verde está aprobada para operación cuando:
 - Conductor y Jefatura completan una jornada de ensayo;
 - se demuestra recuperación offline y conflicto entre dos teléfonos;
 - existe responsable de soporte y recuperación.
+
+## 10. Proveedor externo eliminado
+
+Este manual no requiere una cuenta externa de Cloudflare. La publicación actual depende del alojamiento administrado de ChatGPT Sites; cualquier migración futura debe reemplazar primero las API, los secretos y la base de datos antes de retirar sus adaptadores internos.
