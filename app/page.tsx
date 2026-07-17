@@ -58,7 +58,7 @@ export default function Home() {
       ? await import("./manager-only-app")
       : nextRole === "driver"
         ? await import("./driver-app")
-        : await import("./route-app");
+        : await import("./superadmin-app");
 
     setRole(nextRole);
     setProtectedApp(() => protectedModule.default);
