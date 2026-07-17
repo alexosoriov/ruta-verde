@@ -11,7 +11,6 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.provider.Settings;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
 import android.webkit.GeolocationPermissions;
@@ -25,9 +24,6 @@ import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
-
-import java.util.ArrayList;
-import java.util.List;
 
 public final class MainActivity extends Activity {
     private static final int LOCATION_PERMISSION_REQUEST = 4101;
@@ -169,7 +165,7 @@ public final class MainActivity extends Activity {
         settings.setSupportMultipleWindows(false);
         settings.setMediaPlaybackRequiresUserGesture(true);
         settings.setUserAgentString(settings.getUserAgentString() + " RutaVerdeNative/1.0 Android");
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WebView.setSafeBrowsingEnabled(true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) settings.setSafeBrowsingEnabled(true);
 
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);
@@ -333,7 +329,7 @@ public final class MainActivity extends Activity {
             startLocationService();
         } else if (!granted) {
             startAfterPermission = false;
-            Toast.makeText(this, getString(cl.rutaverde.navigator.R.string.permission_explanation), Toast.LENGTH_LONG).show();
+            Toast.makeText(this, getString(R.string.permission_explanation), Toast.LENGTH_LONG).show();
         }
     }
 
