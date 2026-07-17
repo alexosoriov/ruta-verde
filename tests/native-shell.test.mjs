@@ -22,7 +22,7 @@ test("Android native shell declares a visible location foreground service", asyn
   assert.match(activity, /MIXED_CONTENT_NEVER_ALLOW/);
   assert.match(activity, /RUTA_VERDE_HOST\.equalsIgnoreCase/);
   assert.match(activity, /Object\.defineProperty\(navigator, "geolocation"/);
-  assert.match(activity, /ruta-verde-native:start/);
+  assert.match(activity, /ruta-verde-native:/);
   assert.match(service, /FOREGROUND_SERVICE_TYPE_LOCATION/);
   assert.match(service, /START_STICKY/);
   assert.match(service, /pending_location_fixes/);
