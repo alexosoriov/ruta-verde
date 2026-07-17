@@ -1,27 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import "./gps-zoom-guard";
+import { useEffect, useState } from "react";
 import RouteApp from "./route-app";
-
-type GpsState = {
-  accuracy: number | null;
-  updatedAt: number | null;
-  error: string | null;
-};
-
-function gpsLabel(accuracy: number | null, error: string | null) {
-  if (error) return { text: "Sin señal GPS", tone: "danger" };
-  if (accuracy === null) return { text: "Buscando GPS…", tone: "warning" };
-  if (accuracy <= 12) return { text: "GPS excelente", tone: "good" };
-  if (accuracy <= 30) return { text: "GPS bueno", tone: "good" };
-  return { text: "GPS débil", tone: "warning" };
-}
 
 export default function DriverApp() {
   const [online, setOnline] = useState(true);
   const [now, setNow] = useState(() => Date.now());
-  const [gps, setGps] = useState<GpsState>({ accuracy: null, updatedAt: null, error: null });
 
   useEffect(() => {
     setOnline(navigator.onLine);
@@ -31,32 +15,12 @@ export default function DriverApp() {
     window.addEventListener("offline", onOffline);
     const clock = window.setInterval(() => setNow(Date.now()), 15_000);
 
-    let watchId: number | null = null;
-    if (navigator.geolocation) {
-      watchId = navigator.geolocation.watchPosition(
-        (position) => {
-          setGps({ accuracy: Math.round(position.coords.accuracy), updatedAt: Date.now(), error: null });
-        },
-        (error) => {
-          const message = error.code === 1 ? "Permiso de ubicación bloqueado" : "Sin señal GPS";
-          setGps((current) => ({ ...current, error: message }));
-        },
-        { enableHighAccuracy: true, maximumAge: 1_000, timeout: 15_000 },
-      );
-    }
-
     return () => {
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
       window.clearInterval(clock);
-      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
     };
   }, []);
-
-  const gpsStatus = useMemo(() => {
-    if (gps.updatedAt && now - gps.updatedAt > 40_000) return { text: "GPS sin actualizar", tone: "danger" };
-    return gpsLabel(gps.accuracy, gps.error);
-  }, [gps, now]);
 
   return (
     <>
@@ -66,7 +30,7 @@ export default function DriverApp() {
           <span><strong>Ruta Verde</strong><small>Recorrido en terreno</small></span>
         </div>
         <div className="driver-live-status">
-          <span className={`status-pill ${gpsStatus.tone}`}><i />{gpsStatus.text}{gps.accuracy ? ` · ±${gps.accuracy} m` : ""}</span>
+          <span className="status-pill gps-controlled"><i />GPS controlado desde el mapa</span>
           <span className={`status-pill ${online ? "good" : "warning"}`}><i />{online ? "En línea" : "Modo sin conexión"}</span>
           <span className="driver-time">{new Date(now).toLocaleTimeString("es-CL", { hour: "2-digit", minute: "2-digit" })}</span>
         </div>
@@ -106,7 +70,7 @@ export default function DriverApp() {
         .status-pill i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px rgba(255,255,255,.08); }
         .status-pill.good { color: #70f0a8; }
         .status-pill.warning { color: #ffd166; }
-        .status-pill.danger { color: #ff8585; }
+        .status-pill.gps-controlled { color: #9fd3ff; }
         .driver-time { font-size: 13px; font-weight: 800; color: rgba(255,255,255,.78); }
 
         .app-tabs button:nth-child(2),
