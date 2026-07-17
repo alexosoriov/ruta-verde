@@ -55,10 +55,21 @@ type Tracking = {
   updated_at: number;
 };
 
+type ConnectionState = "waiting" | "live" | "delayed" | "lost" | "finished";
+
 function formatMinutes(value: number) {
   const minutes = Math.max(0, Math.round(value));
   if (minutes < 60) return `${minutes} min`;
   return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+}
+
+function formatLastUpdate(timestamp: number | null) {
+  if (!timestamp) return "Sin ubicación recibida";
+  return new Date(timestamp).toLocaleTimeString("es-CL", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 function readActivity(value: string | null | undefined): TrackingActivity[] {
@@ -93,9 +104,13 @@ export default function ManagerPanel({ localSummary }: Props) {
   const [tracking, setTracking] = useState<Tracking | null>(null);
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState(true);
-  const [ageSeconds, setAgeSeconds] = useState<number | null>(null);
-  const [clock, setClock] = useState(0);
+  const [clock, setClock] = useState(() => Date.now());
   const [mapStyle, setMapStyle] = useState<"streets" | "satellite">("streets");
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!mapElement.current || mapRef.current) return;
@@ -137,15 +152,12 @@ export default function ManagerPanel({ localSummary }: Props) {
   useEffect(() => {
     let active = true;
     const load = async () => {
-      const now = Date.now();
-      setClock(now);
       try {
         const response = await fetch("/api/tracking", { cache: "no-store" });
         if (!response.ok) throw new Error("tracking unavailable");
         const data = await response.json() as { tracking: Tracking | null };
         if (!active) return;
         setTracking(data.tracking);
-        setAgeSeconds(data.tracking ? Math.max(0, Math.round((now - data.tracking.updated_at) / 1000)) : null);
         setConnected(true);
         if (data.tracking && mapRef.current) {
           const point = L.latLng(data.tracking.lat, data.tracking.lng);
@@ -167,7 +179,7 @@ export default function ManagerPanel({ localSummary }: Props) {
       }
     };
     void load();
-    const timer = window.setInterval(load, 5000);
+    const timer = window.setInterval(load, 5_000);
     return () => { active = false; window.clearInterval(timer); };
   }, []);
 
@@ -182,21 +194,76 @@ export default function ManagerPanel({ localSummary }: Props) {
   const kilos = useRemote ? (tracking.kilos ?? 0) : localSummary.kilos;
   const estimatedMinutes = useRemote ? (tracking.estimated_minutes ?? localSummary.estimatedMinutes) : localSummary.estimatedMinutes;
   const startedAt = useRemote ? (tracking.started_at ?? null) : localSummary.startedAt;
-  const elapsedMinutes = startedAt && clock ? Math.max(1, Math.round((clock - startedAt) / 60000)) : 0;
+  const elapsedMinutes = startedAt ? Math.max(1, Math.round((clock - startedAt) / 60000)) : 0;
   const plannedKm = useRemote ? (tracking.route_km ?? localSummary.routeKm) : localSummary.routeKm;
   const actualKm = useRemote ? (tracking.actual_km ?? 0) : localSummary.gpsMetrics.actualKm;
   const movingMinutes = useRemote ? (tracking.moving_minutes ?? 0) : localSummary.gpsMetrics.movingMinutes;
   const stoppedMinutes = useRemote ? (tracking.stopped_minutes ?? 0) : localSummary.gpsMetrics.stoppedMinutes;
   const routeSavingsKm = useRemote ? (tracking.route_savings_km ?? 0) : localSummary.routeSavingsKm;
   const activities = useRemote ? readActivity(tracking.activity_json) : localSummary.activity;
-  const liveConnection = connected && tracking !== null;
+  const ageSeconds = tracking ? Math.max(0, Math.round((clock - tracking.updated_at) / 1000)) : null;
+
+  const connectionState: ConnectionState = !tracking
+    ? "waiting"
+    : tracking.status === "finished" || reviewed >= total
+      ? "finished"
+      : !connected || (ageSeconds !== null && ageSeconds > 60)
+        ? "lost"
+        : ageSeconds !== null && ageSeconds > 15
+          ? "delayed"
+          : "live";
+
+  const connectionLabel: Record<ConnectionState, string> = {
+    waiting: "Esperando al conductor",
+    live: "Ubicación en vivo",
+    delayed: "Señal atrasada",
+    lost: "Sin señal del camión",
+    finished: "Jornada finalizada",
+  };
+
+  const connectionColors: Record<ConnectionState, { background: string; color: string; borderColor: string }> = {
+    waiting: { background: "#eef2eb", color: "#55645e", borderColor: "#dbe1dc" },
+    live: { background: "#dff5e9", color: "#176340", borderColor: "#a9dfc2" },
+    delayed: { background: "#fff3d6", color: "#7b5513", borderColor: "#efd28c" },
+    lost: { background: "#fde5df", color: "#8b3929", borderColor: "#efb5a7" },
+    finished: { background: "#e8ecff", color: "#364b88", borderColor: "#bcc7ef" },
+  };
+
+  const lastUpdateText = tracking
+    ? `Último dato: ${formatLastUpdate(tracking.updated_at)}${ageSeconds !== null ? ` · hace ${ageSeconds} s` : ""}`
+    : "La ubicación aparecerá cuando el conductor active el GPS";
 
   return (
     <section className="manager-view">
       <div className="manager-heading">
         <div><p className="eyebrow"><span /> Supervisión de la jornada</p><h1>Panel de jefatura</h1><p>Avance, incidencias, métricas y ubicación del camión en una sola pantalla.</p></div>
-        <div className={`connection-badge ${liveConnection ? "online" : "offline"}`}><i />{liveConnection ? "Jornada conectada" : "Esperando al conductor"}</div>
+        <div
+          className="connection-badge"
+          style={{ ...connectionColors[connectionState], border: `1px solid ${connectionColors[connectionState].borderColor}` }}
+          role="status"
+          aria-live="polite"
+        ><i />{connectionLabel[connectionState]}</div>
       </div>
+
+      {(connectionState === "delayed" || connectionState === "lost") && (
+        <div
+          role="alert"
+          style={{
+            marginBottom: 16,
+            padding: "14px 16px",
+            borderRadius: 14,
+            border: `1px solid ${connectionColors[connectionState].borderColor}`,
+            background: connectionColors[connectionState].background,
+            color: connectionColors[connectionState].color,
+            fontWeight: 800,
+          }}
+        >
+          {connectionState === "lost"
+            ? "La ubicación dejó de actualizarse. Se conserva el último punto conocido; confirma que el conductor tenga GPS e internet activos."
+            : "La ubicación está llegando con retraso. El mapa puede mostrar una posición anterior del camión."}
+          <div style={{ marginTop: 4, fontSize: 12, fontWeight: 600 }}>{lastUpdateText}</div>
+        </div>
+      )}
 
       <div className="manager-kpi-grid">
         <article className="success"><span>Retiros realizados</span><strong>{done}</strong><small>de {total} viviendas</small></article>
@@ -213,7 +280,7 @@ export default function ManagerPanel({ localSummary }: Props) {
             <a href="https://www.google.com/maps/@?api=1&map_action=map&center=-41.461,-72.899&zoom=16" target="_blank" rel="noreferrer">Google Maps ↗</a>
           </div>
           <div ref={mapElement} className="manager-map" aria-label="Ubicación compartida del camión" />
-          <div className="manager-map-footer">{tracking ? `Actualización automática cada 5 segundos${ageSeconds !== null ? ` · último dato hace ${ageSeconds} s` : ""}` : "La ubicación aparecerá cuando el conductor active el GPS"}</div>
+          <div className="manager-map-footer">{lastUpdateText}</div>
         </div>
 
         <aside className="manager-summary">
@@ -223,7 +290,7 @@ export default function ManagerPanel({ localSummary }: Props) {
 
           <div className="manager-operational-metrics">
             <div><span>Tiempo transcurrido</span><strong>{startedAt ? formatMinutes(elapsedMinutes) : "Sin iniciar"}</strong></div>
-            <div><span>Tiempo restante</span><strong>~{formatMinutes(estimatedMinutes)}</strong></div>
+            <div><span>Tiempo restante</span><strong>{connectionState === "finished" ? "Finalizado" : `~${formatMinutes(estimatedMinutes)}`}</strong></div>
             <div><span>Ruta planificada</span><strong>{plannedKm.toFixed(1)} km</strong></div>
             <div><span>Recorrido GPS</span><strong>{actualKm.toFixed(2)} km</strong></div>
             <div><span>En movimiento</span><strong>{formatMinutes(movingMinutes)}</strong></div>
@@ -234,7 +301,7 @@ export default function ManagerPanel({ localSummary }: Props) {
           <div className="manager-next"><span>Próxima parada</span><strong>{nextStop || (reviewed >= total ? "Recorrido finalizado" : "Esperando inicio")}</strong></div>
 
           <div className="manager-activity">
-            <div className="manager-activity-head"><strong>Actividad reciente</strong><span>{useRemote ? "En vivo" : "Este dispositivo"}</span></div>
+            <div className="manager-activity-head"><strong>Actividad reciente</strong><span>{connectionState === "live" ? "En vivo" : "Últimos registros"}</span></div>
             {activities.length ? activities.slice(0, 6).map((entry) => (
               <div className="activity-row" key={entry.id}>
                 <i className={entry.status} />
