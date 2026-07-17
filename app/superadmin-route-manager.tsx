@@ -24,21 +24,24 @@ type UploadedHome = {
   lng?: unknown;
 };
 
-type PreparedStop = ExistingStop & { coordinateSource: "archivo" | "recorrido anterior" };
-
-type Preview = {
-  stops: PreparedStop[];
-  inherited: number;
-  supplied: number;
-  unresolved: string[];
-};
-
 type CurrentRoute = {
   total: number;
   source: "catalog" | "vault" | "unknown";
   updatedAt?: number;
 };
 
+type Preview = {
+  additions: ExistingStop[];
+  merged: ExistingStop[];
+  currentTotal: number;
+  finalTotal: number;
+  duplicates: string[];
+  unresolved: string[];
+};
+
+const EXPECTED_CURRENT_TOTAL = 41;
+const EXPECTED_ADDITIONS = 3;
+const TARGET_TOTAL = 44;
 const GENERIC_WORDS = new Set(["calle", "pje", "pasaje", "numero", "n", "de", "del", "la", "el"]);
 
 function clean(value: unknown) {
@@ -72,13 +75,6 @@ function addressKey(address: string) {
   return `${streetTokens(address).join("-")}|${houseNumber(address)}`;
 }
 
-function tokenScore(left: string[], right: string[]) {
-  if (!left.length || !right.length) return 0;
-  const rightSet = new Set(right);
-  const shared = left.filter((token) => rightSet.has(token)).length;
-  return shared / Math.max(left.length, right.length);
-}
-
 function asCoordinate(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim()) {
@@ -93,24 +89,9 @@ function distanceKm(a: Pick<ExistingStop, "lat" | "lng">, b: Pick<ExistingStop, 
   const radians = (value: number) => value * Math.PI / 180;
   const dLat = radians(b.lat - a.lat);
   const dLng = radians(b.lng - a.lng);
-  const value = Math.sin(dLat / 2) ** 2 +
-    Math.cos(radians(a.lat)) * Math.cos(radians(b.lat)) * Math.sin(dLng / 2) ** 2;
+  const value = Math.sin(dLat / 2) ** 2
+    + Math.cos(radians(a.lat)) * Math.cos(radians(b.lat)) * Math.sin(dLng / 2) ** 2;
   return 2 * radius * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
-}
-
-function findPrevious(address: string, current: ExistingStop[], usedIds: Set<string>) {
-  const exact = current.find((stop) =>
-    !usedIds.has(stop.id) && stop.address && addressKey(stop.address) === addressKey(address));
-  if (exact) return exact;
-
-  const number = houseNumber(address);
-  if (!number) return undefined;
-  const wantedTokens = streetTokens(address);
-  const candidates = current
-    .filter((stop) => !usedIds.has(stop.id) && stop.address && houseNumber(stop.address) === number)
-    .map((stop) => ({ stop, score: tokenScore(wantedTokens, streetTokens(stop.address!)) }))
-    .sort((a, b) => b.score - a.score);
-  return candidates[0]?.score >= 0.45 ? candidates[0].stop : undefined;
 }
 
 function extractHomes(parsed: unknown): UploadedHome[] | null {
@@ -143,46 +124,92 @@ async function readCurrentRoute(): Promise<{ route: CurrentRoute; stops: Existin
   };
 }
 
-async function prepareFile(file: File): Promise<Preview> {
+function nextStopId(stops: ExistingStop[], offset: number) {
+  const used = new Set(stops.map((stop) => stop.id));
+  let candidate = stops.length + 1 + offset;
+  while (used.has(String(candidate).padStart(2, "0"))) candidate += 1;
+  return String(candidate).padStart(2, "0");
+}
+
+function insertionCost(route: ExistingStop[], stop: ExistingStop, index: number) {
+  const previous = index > 0 ? route[index - 1] : null;
+  const next = index < route.length ? route[index] : null;
+  if (!previous && !next) return 0;
+  if (!previous && next) return distanceKm(stop, next);
+  if (previous && !next) return distanceKm(previous, stop);
+  return distanceKm(previous!, stop) + distanceKm(stop, next!) - distanceKm(previous!, next!);
+}
+
+function insertAtBestPosition(route: ExistingStop[], stop: ExistingStop) {
+  let bestIndex = route.length;
+  let bestCost = Number.POSITIVE_INFINITY;
+  for (let index = 0; index <= route.length; index += 1) {
+    const cost = insertionCost(route, stop, index);
+    if (cost < bestCost) {
+      bestCost = cost;
+      bestIndex = index;
+    }
+  }
+  return [...route.slice(0, bestIndex), stop, ...route.slice(bestIndex)];
+}
+
+function recalculateKilometers(stops: ExistingStop[]) {
+  let cumulative = 0;
+  return stops.map((stop, index) => {
+    if (index > 0) cumulative += distanceKm(stops[index - 1], stop);
+    return { ...stop, km: Number(cumulative.toFixed(3)) };
+  });
+}
+
+async function prepareAdditions(file: File): Promise<Preview> {
   const parsed = JSON.parse(await file.text()) as unknown;
   const homes = extractHomes(parsed);
-  if (!homes?.length) throw new Error("El archivo no contiene una lista de viviendas.");
+  if (!homes?.length) throw new Error("El archivo no contiene viviendas nuevas.");
+  if (homes.length !== EXPECTED_ADDITIONS) {
+    throw new Error(`Este archivo debe contener exactamente ${EXPECTED_ADDITIONS} viviendas nuevas.`);
+  }
 
   const { stops: currentStops } = await readCurrentRoute();
-  const usedIds = new Set<string>();
-  const unresolved: string[] = [];
-  let inherited = 0;
-  let supplied = 0;
+  if (currentStops.length === TARGET_TOTAL) {
+    throw new Error("El recorrido ya tiene 44 viviendas activas.");
+  }
+  if (currentStops.length !== EXPECTED_CURRENT_TOTAL) {
+    throw new Error(`El servidor tiene ${currentStops.length} viviendas, no 41. No se cambió nada para evitar pérdidas.`);
+  }
 
-  const prepared = homes.flatMap((home, index) => {
+  const existingKeys = new Set(currentStops.map((stop) => addressKey(stop.address ?? "")).filter(Boolean));
+  const newKeys = new Set<string>();
+  const duplicates: string[] = [];
+  const unresolved: string[] = [];
+  const additions: ExistingStop[] = [];
+
+  homes.forEach((home, index) => {
     const name = clean(home.name);
     const address = clean(home.address);
     const phone = clean(home.phone);
     const note = clean(home.note);
     const day = clean(home.day) || "Viernes";
+    const lat = asCoordinate(home.lat);
+    const lng = asCoordinate(home.lng);
+
     if (!name || !address) {
       unresolved.push(`Fila ${index + 1}: falta nombre o dirección`);
-      return [];
+      return;
     }
-
-    const previous = findPrevious(address, currentStops, usedIds);
-    const uploadedLat = asCoordinate(home.lat);
-    const uploadedLng = asCoordinate(home.lng);
-    const lat = uploadedLat ?? previous?.lat ?? null;
-    const lng = uploadedLng ?? previous?.lng ?? null;
     if (lat === null || lng === null || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
       unresolved.push(address);
-      return [];
+      return;
     }
 
-    if (uploadedLat !== null && uploadedLng !== null) supplied += 1;
-    else {
-      inherited += 1;
-      if (previous) usedIds.add(previous.id);
+    const key = addressKey(address);
+    if (!key || existingKeys.has(key) || newKeys.has(key)) {
+      duplicates.push(address);
+      return;
     }
+    newKeys.add(key);
 
-    return [{
-      id: String(index + 1).padStart(2, "0"),
+    additions.push({
+      id: nextStopId(currentStops, additions.length),
       name,
       address,
       ...(phone ? { phone } : {}),
@@ -191,25 +218,29 @@ async function prepareFile(file: File): Promise<Preview> {
       lat,
       lng,
       km: 0,
-      coordinateSource: uploadedLat !== null && uploadedLng !== null
-        ? "archivo" as const
-        : "recorrido anterior" as const,
-    }];
+    });
   });
 
-  let cumulative = 0;
-  const stops = prepared.map((stop, index) => {
-    if (index > 0) cumulative += distanceKm(prepared[index - 1], stop);
-    return { ...stop, km: Number(cumulative.toFixed(3)) };
+  let merged = currentStops.map((stop) => ({ ...stop }));
+  additions.forEach((stop) => {
+    merged = insertAtBestPosition(merged, stop);
   });
+  merged = recalculateKilometers(merged);
 
-  return { stops, inherited, supplied, unresolved };
+  return {
+    additions,
+    merged,
+    currentTotal: currentStops.length,
+    finalTotal: merged.length,
+    duplicates,
+    unresolved,
+  };
 }
 
 export default function SuperadminRouteManager() {
   const [current, setCurrent] = useState<CurrentRoute | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
-  const [message, setMessage] = useState("Selecciona el archivo Ruta_Verde_39_viviendas_actualizadas.json.");
+  const [message, setMessage] = useState("Selecciona el archivo Ruta_Verde_agregar_3_viviendas.json.");
   const [loading, setLoading] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -227,13 +258,17 @@ export default function SuperadminRouteManager() {
     setLoading(true);
     setSaved(false);
     setPreview(null);
-    setMessage("Comparando el archivo con las viviendas actuales…");
+    setMessage("Leyendo las 41 viviendas actuales y ubicando las 3 nuevas…");
     try {
-      const result = await prepareFile(file);
+      const result = await prepareAdditions(file);
       setPreview(result);
-      setMessage(result.unresolved.length
-        ? `Faltan coordenadas en ${result.unresolved.length} registro(s). No se guardó ningún cambio.`
-        : `Listo para activar: ${result.stops.length} viviendas, incluidas ${result.supplied} ubicaciones nuevas.`);
+      if (result.duplicates.length || result.unresolved.length) {
+        setMessage("No se guardó nada: revisa los registros marcados antes de continuar.");
+      } else if (result.finalTotal !== TARGET_TOTAL) {
+        setMessage(`La combinación terminó con ${result.finalTotal} viviendas, no 44. No se guardará.`);
+      } else {
+        setMessage("Listo: se conservarán las 41 viviendas y se agregarán 3 para quedar en 44.");
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "No pude revisar el archivo.");
     } finally {
@@ -243,80 +278,83 @@ export default function SuperadminRouteManager() {
   };
 
   const save = async () => {
-    if (!preview || preview.unresolved.length || preview.stops.length < 1) return;
-    if (!window.confirm(`¿Reemplazar las ${current?.total ?? ""} viviendas actuales por estas ${preview.stops.length}?`)) return;
+    if (!preview || preview.unresolved.length || preview.duplicates.length || preview.finalTotal !== TARGET_TOTAL) return;
+    if (!window.confirm("¿Conservar las 41 viviendas actuales y agregar estas 3 para dejar 44 en total?")) return;
+
     setLoading(true);
-    setMessage("Cifrando y activando el nuevo listado…");
+    setMessage("Cifrando y guardando las 44 viviendas…");
     try {
       const response = await fetch("/api/private-route", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          version: 1,
-          stops: preview.stops.map(({ coordinateSource: _source, ...stop }) => stop),
-        }),
+        body: JSON.stringify({ version: 1, stops: preview.merged }),
       });
       const body = await response.json().catch(() => ({})) as { total?: number; error?: string };
-      if (!response.ok) throw new Error(body.error || "No fue posible actualizar las viviendas.");
+      if (!response.ok) throw new Error(body.error || "No fue posible agregar las viviendas.");
 
       const verified = await readCurrentRoute();
-      if (verified.route.total !== preview.stops.length || verified.route.source !== "catalog") {
-        throw new Error("El servidor recibió el listado, pero no lo devolvió como recorrido activo.");
+      if (verified.route.total !== TARGET_TOTAL || verified.route.source !== "catalog") {
+        throw new Error("El servidor recibió los datos, pero todavía no devuelve las 44 viviendas como recorrido activo.");
       }
 
       setCurrent(verified.route);
       setSaved(true);
-      setMessage(`${verified.route.total} viviendas activadas. Recargando el mapa automáticamente…`);
+      setMessage("44 viviendas activadas. Recargando el mapa automáticamente…");
       window.setTimeout(() => window.location.reload(), 1_200);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "No fue posible actualizar las viviendas.");
+      setMessage(error instanceof Error ? error.message : "No fue posible agregar las viviendas.");
     } finally {
       setLoading(false);
     }
   };
 
-  const sourceLabel = current?.source === "catalog"
-    ? "Listado actualizado en base de datos"
-    : current?.source === "vault"
-      ? "Listado antiguo cifrado"
-      : "Comprobando listado";
+  const activeTotal = current?.total ?? 0;
+  const ready = preview
+    && preview.finalTotal === TARGET_TOTAL
+    && preview.unresolved.length === 0
+    && preview.duplicates.length === 0;
 
   return (
-    <section className={`route-manager-safe ${current?.total === 39 ? "is-current" : "needs-update"}`} aria-label="Actualizar viviendas">
+    <section className={`route-manager-safe ${activeTotal === TARGET_TOTAL ? "is-current" : "needs-update"}`} aria-label="Agregar viviendas">
       <div className="route-manager-head">
         <div>
           <span className="route-manager-kicker">Solo Superadministrador</span>
-          <h2>{current?.total === 39 ? "Listado actualizado activo" : "Falta activar el listado actualizado"}</h2>
-          <p>{sourceLabel}. El mapa está usando <strong>{current?.total || "…"} viviendas</strong>.</p>
+          <h2>{activeTotal === TARGET_TOTAL ? "44 viviendas activas" : "Agregar 3 viviendas al recorrido"}</h2>
+          <p>El mapa está usando <strong>{activeTotal || "…"} viviendas</strong>. Las existentes no serán eliminadas.</p>
         </div>
         <div className="route-change-count">
           <span>Recorrido</span>
-          <strong>{current?.total || "…"} → 39</strong>
+          <strong>{activeTotal || "…"} → 44</strong>
         </div>
       </div>
 
-      {current?.total !== 39 && (
+      {activeTotal !== TARGET_TOTAL && (
         <div className="route-warning">
-          El mapa seguirá mostrando 41 viviendas hasta seleccionar el archivo y presionar “Activar 39 viviendas”.
+          Se conservarán las 41 viviendas actuales y se agregarán Los Pimientos 4812, Nueva Oriente 4 #5300 y Los Pimientos 4731.
         </div>
       )}
 
       <label className="route-file-button">
-        <span>{loading ? "Revisando archivo…" : "1. Seleccionar archivo de 39 viviendas"}</span>
-        <input type="file" accept="application/json,.json" onChange={chooseFile} disabled={loading} />
+        <span>{loading ? "Revisando archivo…" : "1. Seleccionar archivo con las 3 viviendas"}</span>
+        <input type="file" accept="application/json,.json" onChange={chooseFile} disabled={loading || activeTotal === TARGET_TOTAL} />
       </label>
 
       {preview && (
         <div className="route-preview-grid">
-          <article><span>Viviendas nuevas</span><strong>{preview.stops.length}</strong></article>
-          <article><span>Coordenadas conservadas</span><strong>{preview.inherited}</strong></article>
-          <article><span>Puntos nuevos en mapa</span><strong>{preview.supplied}</strong></article>
-          <article className={preview.unresolved.length ? "warning" : "good"}><span>Sin ubicación</span><strong>{preview.unresolved.length}</strong></article>
+          <article><span>Viviendas actuales</span><strong>{preview.currentTotal}</strong></article>
+          <article><span>Viviendas agregadas</span><strong>{preview.additions.length}</strong></article>
+          <article><span>Total final</span><strong>{preview.finalTotal}</strong></article>
+          <article className={preview.duplicates.length || preview.unresolved.length ? "warning" : "good"}>
+            <span>Problemas</span><strong>{preview.duplicates.length + preview.unresolved.length}</strong>
+          </article>
         </div>
       )}
 
+      {preview?.duplicates.length ? (
+        <div className="route-unresolved"><strong>Direcciones repetidas:</strong>{preview.duplicates.map((item) => <span key={item}>{item}</span>)}</div>
+      ) : null}
       {preview?.unresolved.length ? (
-        <div className="route-unresolved"><strong>Registros pendientes:</strong>{preview.unresolved.map((item) => <span key={item}>{item}</span>)}</div>
+        <div className="route-unresolved"><strong>Sin datos completos:</strong>{preview.unresolved.map((item) => <span key={item}>{item}</span>)}</div>
       ) : null}
 
       <div className={`route-manager-message ${saved ? "success" : ""}`} role="status">{message}</div>
@@ -324,9 +362,9 @@ export default function SuperadminRouteManager() {
         className="route-activate-button"
         type="button"
         onClick={save}
-        disabled={loading || !preview || preview.unresolved.length > 0}
+        disabled={loading || !ready || activeTotal === TARGET_TOTAL}
       >
-        {loading ? "Procesando…" : `2. Activar ${preview?.stops.length ?? 39} viviendas y recargar mapa`}
+        {loading ? "Procesando…" : "2. Conservar 41 y activar 44 viviendas"}
       </button>
 
       <style jsx global>{`
