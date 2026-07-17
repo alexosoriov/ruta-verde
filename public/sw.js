@@ -1,4 +1,4 @@
-const APP_CACHE = "santuario-route-v14";
+const APP_CACHE = "santuario-route-v15";
 const MAP_CACHE = "santuario-map-tiles-v1";
 const MAX_MAP_TILES = 450;
 const CORE = [
