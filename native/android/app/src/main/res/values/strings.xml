@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ruta Verde Navegador</string>
+    <string name="location_channel_name">Seguimiento del recorrido</string>
+    <string name="location_channel_description">Mantiene el GPS activo durante la jornada de recolección.</string>
+    <string name="location_notification_title">Ruta Verde está registrando el recorrido</string>
+    <string name="location_notification_text">GPS activo. Toca para volver al mapa.</string>
+    <string name="permission_explanation">Ruta Verde necesita la ubicación precisa para registrar el recorrido y mantener el GPS mientras la jornada está activa.</string>
+</resources>
