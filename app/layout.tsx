@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import ErrorReporter from "./error-reporter";
 import FieldModeSupport from "./field-mode-support";
 import GpsCameraGuard from "./gps-camera-guard";
+import TurnNavigationOverlay from "./turn-navigation-overlay";
 import "./globals.css";
 import "./mobile.css";
 
@@ -62,6 +63,7 @@ export default function RootLayout({
     <html lang="es-CL">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         {children}
+        <TurnNavigationOverlay />
         <GpsCameraGuard />
         <ErrorReporter />
         <FieldModeSupport />
