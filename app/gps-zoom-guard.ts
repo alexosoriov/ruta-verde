@@ -15,7 +15,6 @@ type WatchSession = {
   lastRawAt: number;
   lastAccepted: GeolocationPosition | null;
   consecutiveErrors: number;
-  rejectedReadings: number;
 };
 
 const MAX_ACCEPTED_ACCURACY_METERS = 50;
@@ -57,22 +56,27 @@ function isPlausiblePosition(
 
   const elapsedSeconds = Math.max(0.5, (position.timestamp - previous.timestamp) / 1_000);
   const movement = distanceMeters(previous.coords, position.coords);
-  const reportedSpeed = position.coords.speed;
   const calculatedSpeed = movement / elapsedSeconds;
+  const reportedSpeed = position.coords.speed;
   const uncertainty = previous.coords.accuracy + position.coords.accuracy;
 
-  if (reportedSpeed !== null && reportedSpeed > MAX_REALISTIC_SPEED_METERS_PER_SECOND) {
-    return false;
-  }
-
-  if (
+  if (reportedSpeed !== null && reportedSpeed > MAX_REALISTIC_SPEED_METERS_PER_SECOND) return false;
+  return !(
     calculatedSpeed > MAX_REALISTIC_SPEED_METERS_PER_SECOND &&
     movement > Math.max(80, uncertainty * 2)
-  ) {
-    return false;
-  }
+  );
+}
 
-  return true;
+function coordinatesToJson(coords: GeolocationCoordinates) {
+  return {
+    latitude: coords.latitude,
+    longitude: coords.longitude,
+    accuracy: coords.accuracy,
+    altitude: coords.altitude,
+    altitudeAccuracy: coords.altitudeAccuracy,
+    heading: coords.heading,
+    speed: coords.speed,
+  };
 }
 
 function stablePosition(
@@ -81,30 +85,31 @@ function stablePosition(
 ): GeolocationPosition {
   if (!previous) return position;
 
-  const speed = position.coords.speed;
   const movement = distanceMeters(previous.coords, position.coords);
   const stationaryRadius = Math.min(
     MAX_STATIONARY_RADIUS_METERS,
     Math.max(MIN_STATIONARY_RADIUS_METERS, position.coords.accuracy * 0.55),
   );
   const likelyStationary =
-    (speed === null || speed <= STATIONARY_SPEED_METERS_PER_SECOND) &&
+    (position.coords.speed === null || position.coords.speed <= STATIONARY_SPEED_METERS_PER_SECOND) &&
     movement <= stationaryRadius;
 
   if (!likelyStationary) return position;
 
-  return {
-    timestamp: position.timestamp,
-    coords: {
-      latitude: previous.coords.latitude,
-      longitude: previous.coords.longitude,
-      accuracy: Math.min(previous.coords.accuracy, position.coords.accuracy),
-      altitude: position.coords.altitude,
-      altitudeAccuracy: position.coords.altitudeAccuracy,
-      heading: previous.coords.heading ?? position.coords.heading,
-      speed: 0,
+  const coords: GeolocationCoordinates = {
+    latitude: previous.coords.latitude,
+    longitude: previous.coords.longitude,
+    accuracy: Math.min(previous.coords.accuracy, position.coords.accuracy),
+    altitude: position.coords.altitude,
+    altitudeAccuracy: position.coords.altitudeAccuracy,
+    heading: previous.coords.heading ?? position.coords.heading,
+    speed: 0,
+    toJSON() {
+      return coordinatesToJson(this);
     },
   };
+
+  return { timestamp: position.timestamp, coords };
 }
 
 if (typeof window !== "undefined" && !window.__rutaVerdeZoomGuardInstalled) {
@@ -119,7 +124,7 @@ if (typeof window !== "undefined" && !window.__rutaVerdeZoomGuardInstalled) {
     const sessions = new Map<number, WatchSession>();
     let nextVirtualId = 1_000_000;
 
-    prototype.watchPosition = function watchPosition(
+    prototype.watchPosition = function guardedWatchPosition(
       successCallback: PositionCallback,
       errorCallback?: PositionErrorCallback | null,
       options?: PositionOptions,
@@ -133,7 +138,6 @@ if (typeof window !== "undefined" && !window.__rutaVerdeZoomGuardInstalled) {
         lastRawAt: Date.now(),
         lastAccepted: null,
         consecutiveErrors: 0,
-        rejectedReadings: 0,
       };
       sessions.set(virtualId, session);
 
@@ -146,13 +150,7 @@ if (typeof window !== "undefined" && !window.__rutaVerdeZoomGuardInstalled) {
           (rawPosition) => {
             session.lastRawAt = Date.now();
             session.consecutiveErrors = 0;
-
-            if (!isPlausiblePosition(rawPosition, session.lastAccepted)) {
-              session.rejectedReadings += 1;
-              return;
-            }
-
-            session.rejectedReadings = 0;
+            if (!isPlausiblePosition(rawPosition, session.lastAccepted)) return;
             const position = stablePosition(rawPosition, session.lastAccepted);
             session.lastAccepted = position;
             successCallback(position);
@@ -161,7 +159,6 @@ if (typeof window !== "undefined" && !window.__rutaVerdeZoomGuardInstalled) {
             session.lastRawAt = Date.now();
             session.consecutiveErrors += 1;
             errorCallback?.(error);
-
             if (session.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
               session.consecutiveErrors = 0;
               window.setTimeout(startNativeWatch, 1_500);
@@ -186,28 +183,26 @@ if (typeof window !== "undefined" && !window.__rutaVerdeZoomGuardInstalled) {
       return virtualId;
     };
 
-    prototype.clearWatch = function clearWatch(watchId: number) {
+    prototype.clearWatch = function guardedClearWatch(watchId: number) {
       const session = sessions.get(watchId);
       if (!session) {
         originalClearWatch.call(this, watchId);
         return;
       }
-
       session.stopped = true;
       if (session.nativeId !== null) originalClearWatch.call(this, session.nativeId);
       if (session.restartTimer !== null) window.clearInterval(session.restartTimer);
       sessions.delete(watchId);
     };
 
-    const restartVisibleSessions = () => {
+    const markSessionsStale = () => {
       if (document.visibilityState !== "visible") return;
       for (const session of sessions.values()) {
         session.lastRawAt = Math.min(session.lastRawAt, Date.now() - WATCH_STALE_RESTART_MS);
       }
     };
-
-    document.addEventListener("visibilitychange", restartVisibleSessions);
-    window.addEventListener("online", restartVisibleSessions);
+    document.addEventListener("visibilitychange", markSessionsStale);
+    window.addEventListener("online", markSessionsStale);
   }
 
   const markManualMapControl = (event: Event) => {
@@ -219,19 +214,17 @@ if (typeof window !== "undefined" && !window.__rutaVerdeZoomGuardInstalled) {
   document.addEventListener("pointerdown", markManualMapControl, true);
   document.addEventListener("touchstart", markManualMapControl, { capture: true, passive: true });
   document.addEventListener("wheel", markManualMapControl, { capture: true, passive: true });
-
   document.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
-    const button = target.closest("button");
-    const text = button?.textContent?.toLowerCase() ?? "";
-    if (text.includes("seguir camión") || text.includes("centrar camión")) {
+    const label = target.closest("button")?.textContent?.toLocaleLowerCase("es-CL") ?? "";
+    if (label.includes("seguir camión") || label.includes("centrar camión")) {
       window.__rutaVerdeManualMapUntil = 0;
     }
   }, true);
 
   const originalSetView = L.Map.prototype.setView;
-  L.Map.prototype.setView = function setView(
+  L.Map.prototype.setView = function guardedSetView(
     center: L.LatLngExpression,
     zoom?: number,
     options?: L.ZoomPanOptions,
@@ -242,19 +235,17 @@ if (typeof window !== "undefined" && !window.__rutaVerdeZoomGuardInstalled) {
       window.__rutaVerdeFirstGpsFixPending = false;
       if (manualControlActive) return this;
       const requestedZoom = typeof zoom === "number" ? zoom : 16;
-      const safeZoom = Math.min(16, Math.max(15, requestedZoom));
-      return originalSetView.call(this, center, safeZoom, options);
+      return originalSetView.call(this, center, Math.min(16, Math.max(15, requestedZoom)), options);
     }
     return originalSetView.call(this, center, zoom, options);
   };
 
   const originalPanTo = L.Map.prototype.panTo;
-  L.Map.prototype.panTo = function panTo(
+  L.Map.prototype.panTo = function guardedPanTo(
     latlng: L.LatLngExpression,
     options?: L.PanOptions,
   ) {
-    const manualControlActive = Date.now() < (window.__rutaVerdeManualMapUntil ?? 0);
-    if (manualControlActive) return this;
+    if (Date.now() < (window.__rutaVerdeManualMapUntil ?? 0)) return this;
     return originalPanTo.call(this, latlng, options);
   };
 }
