@@ -25,17 +25,17 @@ Aplicación privada para gestionar el recorrido de recolección de reciclaje del
 - **Jefatura:** seguimiento, avance, métricas, ubicación del camión y lectura de diagnósticos.
 - **Superadministrador:** acceso completo a vistas y funciones protegidas.
 
-Las credenciales se configuran exclusivamente mediante secretos de Cloudflare. No existen usuarios ni contraseñas escritos dentro del código.
+Las credenciales se configuran únicamente mediante secretos o variables privadas del entorno de alojamiento. No existen usuarios ni contraseñas escritos dentro del código.
 
 ## Protección de datos
 
 - recorrido base cifrado con AES-256-GCM;
-- jornadas, revisiones, seguimiento y diagnósticos cifrados antes de guardarse en Cloudflare D1;
+- jornadas, revisiones, seguimiento y diagnósticos cifrados antes de guardarse en la base de datos administrada;
 - subclaves separadas mediante HKDF-SHA-256;
 - IndexedDB y respaldos offline cifrados con una clave no extraíble del dispositivo;
 - bloqueo persistente de intentos de acceso;
 - API protegidas por sesión y permisos según el rol;
-- sincronización de conflictos realizada después de descifrar en el Worker y antes de volver a cifrar.
+- sincronización de conflictos realizada después de descifrar en el servidor y antes de volver a cifrar.
 
 Consulta `SECURITY.md`, `SECURITY_SETUP.md`, `OPERATIONS_RUNBOOK.md` y `FIELD_TEST_CHECKLIST.md` antes de desplegar.
 
@@ -47,6 +47,8 @@ Requiere Node.js 22 o una versión posterior.
 npm ci
 npm run dev
 ```
+
+Para las variables privadas de desarrollo, copia `.env.example` como `.env.local` y reemplaza todos los valores de ejemplo.
 
 ## Verificación
 
@@ -71,6 +73,6 @@ La versión actual no hace desaparecer datos que hayan estado en versiones públ
 
 No se debe declarar la aplicación lista para producción solamente porque el build sea exitoso. La prueba física debe cubrir GPS con pantalla bloqueada, cambio de aplicación, ahorro de batería, modo avión, recuperación de internet, dos teléfonos y restricciones reales del camión.
 
-## Dominio
+## Alojamiento
 
-La dirección principal del proyecto es [rutaverde.cl](https://rutaverde.cl).
+El repositorio no contiene instrucciones ni credenciales para una cuenta externa de Cloudflare. La aplicación conserva solamente los adaptadores internos necesarios para ejecutarse en el alojamiento administrado de ChatGPT Sites. Si se migra a otro proveedor, primero se debe implementar un reemplazo compatible para las API, secretos y base de datos.
