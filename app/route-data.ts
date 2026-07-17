@@ -1,5 +1,3 @@
-import { applyWeeklyRoutePlan } from "./route-plan-state";
-
 export type Stop = {
   id: string;
   name: string;
@@ -33,10 +31,7 @@ export function installRouteData(value: unknown) {
   if (!Array.isArray(value) || value.length === 0 || !value.every(validStop)) {
     throw new Error("Los datos privados del recorrido son inválidos.");
   }
-
-  const source = value.map((stop) => ({ ...stop }));
-  const planned = applyWeeklyRoutePlan(source);
-  STOPS = planned.stops;
+  STOPS = value.map((stop) => ({ ...stop }));
 }
 
 export function clearRouteData() {
