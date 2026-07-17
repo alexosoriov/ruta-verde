@@ -59,7 +59,7 @@ test("la instalación explica Android e iPhone y el respaldo offline se actualiz
   assert.match(install, /Android · Chrome/u);
   assert.match(install, /Agregar a inicio/u);
   assert.match(install, /Instalar aplicación/u);
-  assert.match(worker, /santuario-route-v14/u);
+  assert.match(worker, /santuario-route-v15/u);
   assert.match(worker, /logo-ruta-verde\.png/u);
   assert.match(worker, /offline-map-tile\.svg/u);
   assert.doesNotMatch(worker, /cache\.put\([^\n]*\/api\//u);
