@@ -109,7 +109,13 @@ function stablePosition(
     },
   };
 
-  return { timestamp: position.timestamp, coords };
+  return {
+    timestamp: position.timestamp,
+    coords,
+    toJSON() {
+      return { timestamp: this.timestamp, coords: this.coords.toJSON() };
+    },
+  };
 }
 
 if (typeof window !== "undefined" && !window.__rutaVerdeZoomGuardInstalled) {
