@@ -27,11 +27,11 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# env files
 .env*
+!.env.example
 .dev.vars
 .dev.vars.*
-!.dev.vars.example
 
 # private route material
 /private/
@@ -44,13 +44,13 @@ yarn-error.log*
 /worker/vault/*.csv
 /worker/vault/*.txt
 
-# vercel
+# local hosting/runtime output
 .vercel
-
-# typescript
-next-env.d.ts
-/dist/
 /.wrangler/
 /.sites-runtime/
 /outputs/
 /work/
+
+# typescript
+next-env.d.ts
+/dist/
