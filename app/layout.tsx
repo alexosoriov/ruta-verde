@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import ErrorReporter from "./error-reporter";
 import FieldModeSupport from "./field-mode-support";
+import GpsMapStability from "./gps-map-stability";
 import "./globals.css";
 import "./mobile.css";
 
@@ -63,6 +64,7 @@ export default function RootLayout({
         {children}
         <ErrorReporter />
         <FieldModeSupport />
+        <GpsMapStability />
       </body>
     </html>
   );
