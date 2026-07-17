@@ -27,7 +27,18 @@ jobs:
         run: npm ci
 
       - name: Revisar TypeScript
-        run: npx tsc --noEmit
+        run: |
+          set -o pipefail
+          npx tsc --noEmit 2>&1 | tee typecheck.log
+
+      - name: Guardar diagnóstico TypeScript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typecheck-log
+          path: typecheck.log
+          retention-days: 7
+          if-no-files-found: ignore
 
       - name: Construir aplicación
         run: npm run build
