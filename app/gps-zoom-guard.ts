@@ -4,6 +4,7 @@ declare global {
   interface Window {
     __rutaVerdeZoomGuardInstalled?: boolean;
     __rutaVerdeFirstGpsFixPending?: boolean;
+    __rutaVerdeManualMapUntil?: number;
   }
 }
 
@@ -24,6 +25,7 @@ const MIN_STATIONARY_RADIUS_METERS = 7;
 const MAX_STATIONARY_RADIUS_METERS = 18;
 const MAX_REALISTIC_SPEED_METERS_PER_SECOND = 45;
 const MAX_CONSECUTIVE_ERRORS = 3;
+const MANUAL_MAP_CONTROL_MS = 60_000;
 
 function distanceMeters(
   a: { latitude: number; longitude: number },
@@ -63,7 +65,6 @@ function isPlausiblePosition(
     return false;
   }
 
-  // Evita teletransportes del marcador provocados por rebotes del GPS.
   if (
     calculatedSpeed > MAX_REALISTIC_SPEED_METERS_PER_SECOND &&
     movement > Math.max(80, uncertainty * 2)
@@ -108,6 +109,7 @@ function stablePosition(
 
 if (typeof window !== "undefined" && !window.__rutaVerdeZoomGuardInstalled) {
   window.__rutaVerdeZoomGuardInstalled = true;
+  window.__rutaVerdeManualMapUntil = 0;
 
   const geolocation = navigator.geolocation;
   if (geolocation) {
@@ -200,7 +202,6 @@ if (typeof window !== "undefined" && !window.__rutaVerdeZoomGuardInstalled) {
     const restartVisibleSessions = () => {
       if (document.visibilityState !== "visible") return;
       for (const session of sessions.values()) {
-        // Fuerza una revisión rápida al volver desde otra aplicación o apagar la pantalla.
         session.lastRawAt = Math.min(session.lastRawAt, Date.now() - WATCH_STALE_RESTART_MS);
       }
     };
@@ -209,20 +210,52 @@ if (typeof window !== "undefined" && !window.__rutaVerdeZoomGuardInstalled) {
     window.addEventListener("online", restartVisibleSessions);
   }
 
+  const markManualMapControl = (event: Event) => {
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest(".leaflet-container")) return;
+    window.__rutaVerdeManualMapUntil = Date.now() + MANUAL_MAP_CONTROL_MS;
+  };
+
+  document.addEventListener("pointerdown", markManualMapControl, true);
+  document.addEventListener("touchstart", markManualMapControl, { capture: true, passive: true });
+  document.addEventListener("wheel", markManualMapControl, { capture: true, passive: true });
+
+  document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const button = target.closest("button");
+    const text = button?.textContent?.toLowerCase() ?? "";
+    if (text.includes("seguir camión") || text.includes("centrar camión")) {
+      window.__rutaVerdeManualMapUntil = 0;
+    }
+  }, true);
+
   const originalSetView = L.Map.prototype.setView;
   L.Map.prototype.setView = function setView(
     center: L.LatLngExpression,
     zoom?: number,
     options?: L.ZoomPanOptions,
   ) {
+    const manualControlActive = Date.now() < (window.__rutaVerdeManualMapUntil ?? 0);
     const firstGpsCenter = window.__rutaVerdeFirstGpsFixPending && options?.animate === false;
     if (firstGpsCenter) {
       window.__rutaVerdeFirstGpsFixPending = false;
+      if (manualControlActive) return this;
       const requestedZoom = typeof zoom === "number" ? zoom : 16;
       const safeZoom = Math.min(16, Math.max(15, requestedZoom));
       return originalSetView.call(this, center, safeZoom, options);
     }
     return originalSetView.call(this, center, zoom, options);
+  };
+
+  const originalPanTo = L.Map.prototype.panTo;
+  L.Map.prototype.panTo = function panTo(
+    latlng: L.LatLngExpression,
+    options?: L.PanOptions,
+  ) {
+    const manualControlActive = Date.now() < (window.__rutaVerdeManualMapUntil ?? 0);
+    if (manualControlActive) return this;
+    return originalPanTo.call(this, latlng, options);
   };
 }
 
