@@ -1,5 +1,6 @@
 "use client";
 
+import "./gps-zoom-guard";
 import RouteApp from "./route-app";
 
 export default function DriverApp() {
@@ -7,112 +8,71 @@ export default function DriverApp() {
     <>
       <style jsx global>{`
         .app-tabs button:nth-child(2),
-        .hero,
-        .workflow-strip,
         .hero-actions > button,
         .presentation-bar {
           display: none !important;
         }
 
         .workspace {
-          margin-top: 18px !important;
+          grid-template-columns: minmax(0, 1fr) 390px;
         }
 
-        .next-card .primary-action,
-        .next-card .complete-action,
-        .next-card .absent-action,
-        .next-card .quick-settings button,
-        .map-buttons button,
-        .row-nav,
-        .row-actions button {
+        .next-card {
+          position: sticky;
+          top: 14px;
+        }
+
+        .primary-action,
+        .complete-action,
+        .absent-action,
+        .map-buttons button {
           min-height: 52px !important;
           font-size: 13px !important;
         }
 
-        .next-card h2 {
-          font-size: clamp(28px, 4vw, 38px) !important;
-          line-height: 1.08 !important;
-        }
-
-        .next-card .complete-action,
-        .next-card .absent-action {
-          font-size: 15px !important;
-          font-weight: 900 !important;
-        }
-
-        @media (max-width: 860px) {
-          .topbar {
-            min-height: 66px;
-            height: auto;
-            padding: 8px 12px;
-          }
-
-          .brand-copy span,
-          .header-date,
-          .install-button,
-          .installed-badge {
-            display: none !important;
-          }
-
-          .app-tabs {
+        @media (max-width: 900px) {
+          .hero,
+          .workflow-strip,
+          .stats-row,
+          .route-list-section,
+          .tools-panel {
             display: none !important;
           }
 
           .workspace {
-            width: calc(100% - 16px) !important;
-            margin: 8px auto 0 !important;
-            display: flex !important;
-            flex-direction: column !important;
-            gap: 10px !important;
+            width: 100%;
+            grid-template-columns: 1fr;
+            gap: 10px;
+            padding: 10px;
+          }
+
+          .map-column {
+            order: 2;
           }
 
           .next-card {
-            order: -1;
-            position: sticky;
-            top: 8px;
-            z-index: 900;
-            padding: 18px !important;
-            border-radius: 20px !important;
-          }
-
-          .next-card .next-number,
-          .next-card .segment-box,
-          .next-card .quick-settings {
-            display: none !important;
-          }
-
-          .next-card p {
-            margin-bottom: 10px !important;
-          }
-
-          .next-card > div[style] {
-            margin: 8px 0 !important;
-            padding: 9px !important;
+            order: 1;
+            position: static;
+            padding: 18px;
           }
 
           .street-map {
-            height: 54vh !important;
-            min-height: 360px !important;
+            height: 58vh;
+            min-height: 390px;
           }
 
-          .map-toolbar {
-            padding-bottom: 8px !important;
-          }
-
-          .map-buttons button {
-            min-width: 132px;
-          }
-
-          .stats-row {
+          .quick-settings,
+          .segment-box,
+          .next-card > div[style*="grid"] {
             display: none !important;
           }
 
-          .route-list-section {
-            margin-top: 12px !important;
+          .next-card h2 {
+            font-size: 29px;
           }
 
-          .stop-row {
-            min-height: 68px;
+          .next-card p {
+            font-size: 13px;
           }
         }
       `}</style>
