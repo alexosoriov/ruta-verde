@@ -1,0 +1,23 @@
+name: RutaVerde
+options:
+  bundleIdPrefix: cl.rutaverde
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+targets:
+  RutaVerde:
+    type: application
+    platform: iOS
+    sources:
+      - path: RutaVerde
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: cl.rutaverde.navigator
+        INFOPLIST_FILE: RutaVerde/Info.plist
+        SWIFT_VERSION: "6.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO
+    scheme:
+      gatherCoverageData: false
