@@ -42,11 +42,14 @@ test("la interfaz carga una aplicación diferente para cada rol", async () => {
   const page = await read("app/page.tsx");
   const driver = await read("app/driver-app.tsx");
   const manager = await read("app/manager-only-app.tsx");
+  const superadmin = await read("app/superadmin-app.tsx");
 
   assert.match(page, /import\("\.\/manager-only-app"\)/u);
   assert.match(page, /import\("\.\/driver-app"\)/u);
-  assert.match(page, /import\("\.\/route-app"\)/u);
+  assert.match(page, /import\("\.\/superadmin-app"\)/u);
   assert.match(driver, /RouteApp/u);
   assert.match(manager, /ManagerPanel/u);
   assert.match(manager, /Jefatura · seguimiento/u);
+  assert.match(superadmin, /LevelOneSuite/u);
+  assert.match(superadmin, /RouteApp/u);
 });
