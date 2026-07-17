@@ -42,8 +42,8 @@ jobs:
       - name: Configurar Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Instalar plataforma Android
-        run: sdkmanager "platforms;android-37" "build-tools;36.0.0"
+      - name: Instalar plataforma Android estable
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
 
       - name: Compilar APK de prueba
         run: gradle -p native/android :app:assembleDebug --stacktrace
