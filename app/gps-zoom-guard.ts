@@ -13,13 +13,17 @@ type WatchSession = {
   restartTimer: number | null;
   lastRawAt: number;
   lastAccepted: GeolocationPosition | null;
+  consecutiveErrors: number;
+  rejectedReadings: number;
 };
 
 const MAX_ACCEPTED_ACCURACY_METERS = 50;
-const WATCH_STALE_RESTART_MS = 50_000;
+const WATCH_STALE_RESTART_MS = 35_000;
 const STATIONARY_SPEED_METERS_PER_SECOND = 0.8;
 const MIN_STATIONARY_RADIUS_METERS = 7;
 const MAX_STATIONARY_RADIUS_METERS = 18;
+const MAX_REALISTIC_SPEED_METERS_PER_SECOND = 45;
+const MAX_CONSECUTIVE_ERRORS = 3;
 
 function distanceMeters(
   a: { latitude: number; longitude: number },
@@ -35,6 +39,39 @@ function distanceMeters(
     Math.sin(deltaLat / 2) ** 2 +
     Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) ** 2;
   return 2 * earthRadius * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function isPlausiblePosition(
+  position: GeolocationPosition,
+  previous: GeolocationPosition | null,
+) {
+  if (!Number.isFinite(position.coords.latitude) || !Number.isFinite(position.coords.longitude)) {
+    return false;
+  }
+  if (position.coords.accuracy <= 0 || position.coords.accuracy > MAX_ACCEPTED_ACCURACY_METERS) {
+    return false;
+  }
+  if (!previous) return true;
+
+  const elapsedSeconds = Math.max(0.5, (position.timestamp - previous.timestamp) / 1_000);
+  const movement = distanceMeters(previous.coords, position.coords);
+  const reportedSpeed = position.coords.speed;
+  const calculatedSpeed = movement / elapsedSeconds;
+  const uncertainty = previous.coords.accuracy + position.coords.accuracy;
+
+  if (reportedSpeed !== null && reportedSpeed > MAX_REALISTIC_SPEED_METERS_PER_SECOND) {
+    return false;
+  }
+
+  // Evita teletransportes del marcador provocados por rebotes del GPS.
+  if (
+    calculatedSpeed > MAX_REALISTIC_SPEED_METERS_PER_SECOND &&
+    movement > Math.max(80, uncertainty * 2)
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 function stablePosition(
@@ -93,6 +130,8 @@ if (typeof window !== "undefined" && !window.__rutaVerdeZoomGuardInstalled) {
         restartTimer: null,
         lastRawAt: Date.now(),
         lastAccepted: null,
+        consecutiveErrors: 0,
+        rejectedReadings: 0,
       };
       sessions.set(virtualId, session);
 
@@ -104,31 +143,43 @@ if (typeof window !== "undefined" && !window.__rutaVerdeZoomGuardInstalled) {
           this,
           (rawPosition) => {
             session.lastRawAt = Date.now();
-            if (rawPosition.coords.accuracy > MAX_ACCEPTED_ACCURACY_METERS) return;
+            session.consecutiveErrors = 0;
 
+            if (!isPlausiblePosition(rawPosition, session.lastAccepted)) {
+              session.rejectedReadings += 1;
+              return;
+            }
+
+            session.rejectedReadings = 0;
             const position = stablePosition(rawPosition, session.lastAccepted);
             session.lastAccepted = position;
             successCallback(position);
           },
           (error) => {
             session.lastRawAt = Date.now();
+            session.consecutiveErrors += 1;
             errorCallback?.(error);
+
+            if (session.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+              session.consecutiveErrors = 0;
+              window.setTimeout(startNativeWatch, 1_500);
+            }
           },
           {
             enableHighAccuracy: true,
             maximumAge: Math.min(options?.maximumAge ?? 1_000, 1_000),
-            timeout: Math.min(options?.timeout ?? 20_000, 20_000),
+            timeout: Math.min(options?.timeout ?? 15_000, 15_000),
           },
         );
       };
 
       startNativeWatch();
       session.restartTimer = window.setInterval(() => {
-        if (session.stopped) return;
+        if (session.stopped || document.visibilityState === "hidden") return;
         if (Date.now() - session.lastRawAt < WATCH_STALE_RESTART_MS) return;
         session.lastRawAt = Date.now();
         startNativeWatch();
-      }, 10_000);
+      }, 5_000);
 
       return virtualId;
     };
@@ -145,6 +196,17 @@ if (typeof window !== "undefined" && !window.__rutaVerdeZoomGuardInstalled) {
       if (session.restartTimer !== null) window.clearInterval(session.restartTimer);
       sessions.delete(watchId);
     };
+
+    const restartVisibleSessions = () => {
+      if (document.visibilityState !== "visible") return;
+      for (const session of sessions.values()) {
+        // Fuerza una revisión rápida al volver desde otra aplicación o apagar la pantalla.
+        session.lastRawAt = Math.min(session.lastRawAt, Date.now() - WATCH_STALE_RESTART_MS);
+      }
+    };
+
+    document.addEventListener("visibilitychange", restartVisibleSessions);
+    window.addEventListener("online", restartVisibleSessions);
   }
 
   const originalSetView = L.Map.prototype.setView;
