@@ -8,6 +8,7 @@ import { getSession, handleSessionRequest, requireSession, type SecurityEnv } fr
 import { decryptPrivateRoute } from "./private-route-data";
 import { handleTracking } from "./live-tracking";
 import { migrateLegacyOperationalData } from "./legacy-data-migration";
+import { readStoredPrivateRoute, storePrivateRoute } from "./route-catalog";
 
 interface Env extends SecurityEnv {
   ASSETS: Fetcher;
@@ -39,6 +40,14 @@ function noStoreJson(body: unknown, init: ResponseInit = {}) {
   const headers = new Headers(init.headers);
   headers.set("Cache-Control", "no-store");
   return Response.json(body, { ...init, headers });
+}
+
+function requestIsSameOrigin(request: Request) {
+  const url = new URL(request.url);
+  const origin = request.headers.get("Origin");
+  if (origin && origin !== url.origin) return false;
+  const fetchSite = request.headers.get("Sec-Fetch-Site");
+  return !fetchSite || fetchSite === "same-origin" || fetchSite === "none";
 }
 
 function withSecurityHeaders(response: Response, request: Request) {
@@ -115,17 +124,45 @@ async function handleRequest(request: Request, env: Env, ctx: ExecutionContext):
   }
 
   if (url.pathname === "/api/private-route") {
-    if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
     if (!env.ROUTE_DATA_KEY) {
       return noStoreJson({ error: "Falta configurar ROUTE_DATA_KEY en Cloudflare." }, { status: 503 });
     }
-    try {
-      const stops = await decryptPrivateRoute(env.ROUTE_DATA_KEY);
-      return noStoreJson({ stops });
-    } catch (error) {
-      console.error("No fue posible descifrar el recorrido privado", error);
-      return noStoreJson({ error: "No fue posible descifrar los datos privados." }, { status: 503 });
+
+    if (request.method === "GET") {
+      try {
+        const stored = env.DB ? await readStoredPrivateRoute(env.DB, env.ROUTE_DATA_KEY) : null;
+        if (stored) return noStoreJson({ stops: stored.stops, source: "catalog", updatedAt: stored.updatedAt });
+        const stops = await decryptPrivateRoute(env.ROUTE_DATA_KEY);
+        return noStoreJson({ stops, source: "vault" });
+      } catch (error) {
+        console.error("No fue posible descifrar el recorrido privado", error);
+        return noStoreJson({ error: "No fue posible descifrar los datos privados." }, { status: 503 });
+      }
     }
+
+    if (request.method === "POST") {
+      if (!requestIsSameOrigin(request)) return noStoreJson({ error: "Solicitud rechazada." }, { status: 403 });
+      if (!env.DB) return noStoreJson({ error: "Base de datos no configurada." }, { status: 503 });
+      const session = await getSession(request, env);
+      if (session?.role !== "superadmin") {
+        return noStoreJson({ error: "Solo Superadministrador puede reemplazar las viviendas." }, { status: 403 });
+      }
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return noStoreJson({ error: "El archivo enviado no contiene JSON válido." }, { status: 400 });
+      }
+      try {
+        const saved = await storePrivateRoute(env.DB, env.ROUTE_DATA_KEY, body);
+        return noStoreJson({ ok: true, total: saved.stops.length, updatedAt: saved.updatedAt });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "No fue posible guardar el listado.";
+        return noStoreJson({ error: message }, { status: 400 });
+      }
+    }
+
+    return new Response("Method not allowed", { status: 405 });
   }
 
   if (url.pathname === "/api/tracking") {
